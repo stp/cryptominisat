@@ -105,6 +105,16 @@ jobs:
         ./project/build/cryptominisat5 --version
         echo $?
 
+    - name: Check the binary is statically linked (Linux)
+      if: contains(matrix.os, 'ubuntu')
+      run: |
+        file ./project/build/cryptominisat5
+        if ! file ./project/build/cryptominisat5 | grep -q "statically linked"; then
+          echo "ERROR: cryptominisat5 is not statically linked"
+          ldd ./project/build/cryptominisat5 || true
+          exit 1
+        fi
+
     - name: Package artifacts (Windows)
       if: contains(matrix.os, 'windows')
       shell: bash
