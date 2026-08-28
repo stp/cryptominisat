@@ -2033,8 +2033,9 @@ TEST_F(UserPropOtherApiTest, is_decision_agrees_with_the_trail_under_assumptions
             }
             for(const Lit l: model) {
                 // a literal fixed at the root is never a decision
-                if (raw->ext_is_decision(l)) EXPECT_GT(raw->varData[
-                    raw->map_outer_to_inter(l.var())].level, 0U);
+                if (raw->ext_is_decision(l)) {
+                    EXPECT_GT(raw->varData[raw->map_outer_to_inter(l.var())].level, 0U);
+                }
             }
             return true;
         }
