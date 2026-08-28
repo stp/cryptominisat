@@ -676,6 +676,46 @@ TEST(user_prop_observe, observing_during_new_level_discards_pending_decision)
     EXPECT_EQ(s.get_model()[2], l_False);
 }
 
+// Growing the problem does not move the existing trail. A model callback that
+// adds and observes a fresh variable nevertheless invalidates the solver's
+// just-completed assignment, so the search must run again before returning it.
+class AddsVarAtModelPropagator : public NoopPropagator
+{
+public:
+    SATSolver* raw = nullptr;
+    uint32_t model_checks = 0;
+    bool saw_complete_grown_model = false;
+
+    bool cb_check_found_model(const vector<Lit>& model) override {
+        model_checks++;
+        if (model_checks == 1) {
+            EXPECT_EQ(model.size(), 1U);
+            raw->new_var();
+            raw->add_observed_var(1);
+        } else if (model.size() == 2) {
+            saw_complete_grown_model = true;
+        }
+        return true;
+    }
+};
+
+TEST(user_prop_observe, model_callback_cannot_return_an_incomplete_grown_model)
+{
+    SATSolver s;
+    AddsVarAtModelPropagator p;
+    p.raw = &s;
+    s.set_no_simplify();
+    s.new_var();
+    s.connect_external_propagator(&p);
+    s.add_observed_var(0);
+
+    ASSERT_EQ(s.solve(), l_True);
+    EXPECT_GE(p.model_checks, 2U);
+    EXPECT_TRUE(p.saw_complete_grown_model);
+    ASSERT_EQ(s.get_model().size(), 2U);
+    EXPECT_NE(s.get_model()[1], l_Undef);
+}
+
 TEST(user_prop_is_decision, unassigned_is_not_a_decision)
 {
     SATSolver s;

@@ -747,6 +747,19 @@ lbool Searcher::external_check_solution()
         verb_print(6, "[user-prop] the trail moved during cb_check_found_model()");
         return l_Undef;
     }
+
+    //The callback may also add a fresh variable. That changes neither the
+    //trail nor the decision level, but it invalidates the completeness test
+    //that led here. All non-removed variables are decision variables, so this
+    //is the non-mutating equivalent of asking pickBranchLit() again. Resume at
+    //the propagation boundary so the propagator gets the normal notification,
+    //propagation and decision callbacks for the enlarged problem.
+    for(uint32_t v = 0; v < nVars(); v++) {
+        if (varData[v].removed == Removed::none && value(v) == l_Undef) {
+            verb_print(6, "[user-prop] cb_check_found_model() made the assignment incomplete");
+            return l_Undef;
+        }
+    }
     if (consistent) return l_True;
     ext_stats.models_rejected++;
 
