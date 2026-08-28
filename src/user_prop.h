@@ -51,8 +51,13 @@ returned, the solver is back at decision level 0 and nothing is a decision.
 class ExternalPropagator
 {
 public:
-    /// A lazy propagator only inspects complete assignments: cb_propagate(),
-    /// cb_has_external_clause() and cb_decide() are then never called.
+    /// A lazy propagator only inspects complete assignments. It is not told
+    /// about the trail at all -- none of the notify_* functions below are
+    /// called -- and neither are cb_propagate() and cb_decide().
+    /// cb_check_found_model() still is, and so is cb_has_external_clause()
+    /// whenever a model is rejected: handing over a clause is the only way a
+    /// lazy propagator gets to say anything.
+    /// Read on every callback, so do not change it while connected.
     bool is_lazy = false;
 
     /// If true, the solver is allowed to delete the reason clauses handed over

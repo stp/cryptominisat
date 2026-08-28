@@ -210,7 +210,10 @@ bool Solver::ext_get_observed_trail(vector<vector<Lit>>& out) const
         assert(t.lev < out.size());
         out[t.lev].push_back(map_inter_to_outer(t.lit));
     }
-    return ext_notified == trail.size() && ext_pending_fixed.empty();
+    //A lazy propagator is never notified, so it has no view to compare
+    //against: say the two are allowed to differ rather than claim otherwise.
+    return ext_notify_active()
+        && ext_notified == trail.size() && ext_pending_fixed.empty();
 }
 
 bool Solver::ext_is_decision(const Lit outer_lit) const

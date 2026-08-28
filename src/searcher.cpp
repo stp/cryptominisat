@@ -3372,7 +3372,7 @@ void Searcher::cancelUntil(uint32_t blevel)
         //IPASIR-UP: everything above the target level is gone, so the
         //propagator's stack must be popped down to it too.
         if (ext_notified > trail.size()) ext_notified = trail.size();
-        if (!inprocess && ext_prop_active()) ext_prop->notify_backtrack(blevel);
+        if (!inprocess && ext_notify_active()) ext_prop->notify_backtrack(blevel);
     }
 
     #ifdef VERBOSE_DEBUG

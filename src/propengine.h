@@ -406,7 +406,7 @@ private:
 inline void PropEngine::new_decision_level()
 {
     trail_lim.push_back(trail.size());
-    if (ext_prop_active()) {
+    if (ext_notify_active()) {
         //The propagator sees the trail as a stack, so it must know about
         //everything below this point before the level is opened.
         assert(ext_notified == trail.size());

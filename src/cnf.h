@@ -226,6 +226,13 @@ public:
     [[nodiscard]] bool ext_prop_active() const {
         return ext_prop != nullptr && !ext_prop_private_steps;
     }
+    /// ...and wants to hear about the trail. A lazy propagator only looks at
+    /// complete assignments, so it is not notified at all -- CaDiCaL skips its
+    /// notify_assignments(), notify_decision() and notify_backtrack() the same
+    /// way.
+    [[nodiscard]] bool ext_notify_active() const {
+        return ext_prop_active() && !ext_prop->is_lazy;
+    }
     BinTriStats binTri;
     LitStats litStats;
     int32_t clauseID = 0;

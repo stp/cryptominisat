@@ -1257,6 +1257,14 @@ TEST_F(UserPropPropagateTest, lazy_propagator_is_never_asked)
     p.is_lazy = true;
     solve_with_theory(cls, nvars, cls.size());   // nothing left for the theory
     EXPECT_EQ(p.num_propagations, 0U);
+
+    // ...and never told anything either, so the mirror it inherits stays as it
+    // was started: no levels, no literals, and nothing it could compare.
+    EXPECT_EQ(p.num_backtracks, 0U);
+    EXPECT_EQ(p.max_level_seen, 0U);
+    EXPECT_EQ(p.num_comparisons, 0U);
+    ASSERT_EQ(p.stack.size(), 1U);
+    EXPECT_TRUE(p.stack[0].empty());
 }
 
 }
@@ -1365,6 +1373,33 @@ TEST_F(UserPropDecideTest, model_enumeration_through_cb_check_found_model)
     vector<vector<Lit>> seen = p.models;
     std::sort(seen.begin(), seen.end());
     EXPECT_EQ(std::unique(seen.begin(), seen.end()), seen.end());
+}
+
+TEST_F(UserPropDecideTest, a_lazy_propagator_is_still_asked_for_clauses)
+{
+    // Rejecting a model is the only thing a lazy propagator can do, and it is
+    // useless unless it can then hand over the clause that says why. The same
+    // enumeration as above, with the propagator declared lazy: same answer,
+    // same models, and still nothing notified along the way.
+    const uint32_t nvars = 8;
+    auto cls = gen_3sat(nvars, 10, 21);
+    const uint32_t expected = count_models(cls, nvars);
+    ASSERT_GT(expected, 0U);
+
+    EnumeratingPropagator p;
+    p.is_lazy = true;
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&p);
+    s->new_vars(nvars);
+    for(const auto& cl: cls) { vector<Lit> tmp = cl; s->add_clause_outside(tmp); }
+    for(uint32_t v = 0; v < nvars; v++) s->add_observed_var(v);
+    p.start(s, nvars);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_EQ(s->solve_with_assumptions(), l_False);
+    EXPECT_EQ(p.models.size(), expected);
+    EXPECT_EQ(p.max_level_seen, 0U);
+    EXPECT_EQ(p.num_backtracks, 0U);
 }
 
 TEST_F(UserPropDecideTest, rejecting_without_a_clause_is_taken_as_acceptance)

@@ -418,6 +418,13 @@ single level.
 void PropEngine::notify_assignments()
 {
     if (!ext_prop_active()) return;
+    if (!ext_notify_active()) {
+        //Lazy: nothing to hand over, ever. Keep the cursor with the trail
+        //anyway, so that nothing accumulates behind it.
+        ext_pending_fixed.clear();
+        ext_notified = trail.size();
+        return;
+    }
 
     //Variables that were already fixed when they became observed. Their trail
     //position is behind the cursor, so they are kept separately.
