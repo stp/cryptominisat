@@ -1687,7 +1687,17 @@ lbool Searcher::search()
             search_ret = l_False;
             goto end;
         }
-        confl = propagate<false>();
+        if (confl.isnullptr()) confl = propagate<false>();
+        if (confl.isnullptr() && ext_prop != nullptr) {
+            //IPASIR-UP: unit propagation has reached a fixed point, so this is
+            //where the external propagator gets its say.
+            confl = external_propagate();
+            if (!solver->okay()) {
+                assert(!frat->enabled() || unsat_cl_ID != 0);
+                search_ret = l_False;
+                goto end;
+            }
+        }
         no_conflict_until = confl.isnullptr() ? trail.size() :
             (decisionLevel() == 0 ? 0 : trail_lim[decisionLevel()-1]);
         if (!confl.isnullptr()) {
