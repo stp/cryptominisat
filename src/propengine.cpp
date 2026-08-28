@@ -514,6 +514,26 @@ vector<Lit>* PropEngine::get_ext_reason(const Lit lit)
     release_assert(found &&
         "the reason clause of an external propagation must contain the propagated literal");
 
+    //Every other literal must already have been falsified when 'lit' was
+    //propagated. Conflict analysis walks the trail backwards, so a reason that
+    //names a literal assigned *after* the one it explains sends it looking for a
+    //literal it has already passed, and off the bottom of the trail.
+    //
+    //This is the one part of the contract only the lazy path has to take on
+    //trust: explaining eagerly hands the reason to add_external_clause(), where
+    //it becomes a real clause that has to propagate on its own. The usual way to
+    //get it wrong is to work the reason out when asked rather than recording it
+    //when the propagation was made -- by then the trail has moved on. CaDiCaL
+    //checks the same thing at the end of learn_external_reason_clause().
+    for(size_t i = 1; i < ret->size(); i++) {
+        const Lit other = (*ret)[i];
+        if (other == lit) continue; //a duplicate of the literal being explained
+        release_assert(value(other) == l_False &&
+            "a literal of an external reason clause is not falsified");
+        release_assert(varData[other.var()].sublevel <= varData[lit.var()].sublevel &&
+            "an external reason clause names a literal assigned after the one it explains");
+    }
+
     VERBOSE_PRINT("[user-prop] explained " << lit << " with " << *ret);
     return ret;
 }

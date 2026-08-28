@@ -1834,6 +1834,66 @@ TEST_F(UserPropLazyTest, a_lazy_reason_may_name_a_dropped_root_fixed_variable)
     EXPECT_EQ(s->solve_with_assumptions(), l_True);
 }
 
+// Propagates a literal with a reason it has not checked against the trail --
+// the mistake a propagator makes when it works out the reason at the moment it
+// is asked instead of recording it when the propagation was made.
+class SloppyReasonPropagator : public ExternalPropagator
+{
+public:
+    vector<Lit> reason;      // OUTER, reason[0] is the literal it explains
+    uint32_t propagate_at = 1;
+    uint32_t level = 0;
+    size_t next_lit = 0;
+    bool propagated = false;
+
+    void notify_assignment(const vector<Lit>&) override {}
+    void notify_new_decision_level() override { level++; }
+    void notify_backtrack(size_t new_level) override { level = (uint32_t)new_level; }
+    bool cb_check_found_model(const vector<Lit>&) override { return true; }
+    bool cb_has_external_clause(bool& is_forgettable) override {
+        is_forgettable = false;
+        return false;
+    }
+    Lit cb_add_external_clause_lit() override { return lit_Undef; }
+
+    Lit cb_propagate() override {
+        if (propagated || level != propagate_at) return lit_Undef;
+        propagated = true;
+        return reason[0];
+    }
+    Lit cb_add_reason_clause_lit(Lit) override {
+        if (next_lit == reason.size()) { next_lit = 0; return lit_Undef; }
+        return reason[next_lit++];
+    }
+};
+
+// The propagator claims 2 & 4 -> 3, but propagates 3 on the level of 2, before
+// 4 has been assigned at all. By the time the reason is asked for, 4 is true --
+// so every literal of the clause is falsified as it should be, and the only
+// thing wrong with it is that it names an assignment made after the one it
+// explains. Left alone, conflict analysis walks off the bottom of the trail.
+static void solve_with_a_sloppy_reason(SolverConf& conf)
+{
+    SloppyReasonPropagator sp;
+    sp.reason = str_to_cl("3, -2, -4", false);
+    std::atomic<bool> inter;
+    inter.store(false, std::memory_order_relaxed);
+    Solver solver(&conf, &inter);
+    solver.connect_external_propagator(&sp);
+    solver.new_vars(6);
+    solver.add_clause_outside(str_to_cl("5, 6"));
+    for(uint32_t v = 0; v < 6; v++) solver.add_observed_var(v);
+    vector<Lit> as = {Lit(1, false), Lit(3, false), Lit(2, true)};
+    solver.solve_with_assumptions(&as);
+}
+
+TEST_F(UserPropLazyTest, a_reason_naming_a_later_assignment_is_caught)
+{
+    conf.ext_lazy_reasons = true;
+    EXPECT_DEATH(solve_with_a_sloppy_reason(conf),
+                 "assigned after the one it explains");
+}
+
 }
 
 ////////////////////////////
