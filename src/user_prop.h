@@ -42,6 +42,11 @@ SATSolver::add_observed_var().
 At most one propagator can be connected to a solver. Connecting a propagator
 restricts the solver to a single thread and disables Gauss-Jordan elimination
 and chronological backtracking.
+
+A note on SATSolver::is_decision(): a literal counts as a decision when it is
+assigned above the root with no reason, which includes the assumptions of the
+current solve call. It is only meaningful while solving -- once solve() has
+returned, the solver is back at decision level 0 and nothing is a decision.
 */
 class ExternalPropagator
 {
