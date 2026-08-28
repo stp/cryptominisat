@@ -133,10 +133,18 @@ namespace CMSat {
         void unphase(uint32_t var);
 
         // Explain external propagations lazily: ask for the reason clause only
-        // when conflict analysis needs it, instead of straight away. Avoids
-        // learning reason clauses that are never used, but the reasons are then
-        // not part of the clause database and cannot appear in a FRAT proof, so
-        // this is ignored while proof logging is on. Off by default.
+        // when conflict analysis needs it, instead of straight away. This is
+        // what the paper describes, and what CaDiCaL does; it avoids learning
+        // reason clauses that are never used. It is off by default because a
+        // propagation with no reason cannot be written down, and CryptoMiniSat
+        // records its whole derivation in FRAT -- so this is ignored while proof
+        // logging is on.
+        //
+        // Explaining eagerly has a cost of its own: the reason clause is added
+        // to the solver, so a propagation whose antecedents all sit below the
+        // current decision level makes the search backtrack to where it should
+        // have been made. A propagator that propagates as soon as its antecedent
+        // completes never runs into that; one that catches up in batches will.
         void set_lazy_external_reasons(bool lazy);
 
         ////////////////////////////
