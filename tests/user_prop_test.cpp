@@ -614,6 +614,68 @@ TEST(user_prop_phase, unphase_gives_control_back)
     EXPECT_EQ(s.solve(), l_True);
 }
 
+// Observing v while the solver is opening the level for z backtracks over the
+// earlier x -> v assignment. The pending z decision belongs to that discarded
+// trail and must not be installed at the root. If it is, the valid external
+// unit -z is mistaken for a root conflict and the satisfiable problem is
+// reported UNSAT.
+class ObservesDuringNewLevelPropagator : public NoopPropagator
+{
+public:
+    SATSolver* raw = nullptr;
+    uint32_t levels_opened = 0;
+    size_t next_reason_lit = 0;
+    bool chose_x = false;
+    bool observed_v = false;
+    bool propagated_not_z = false;
+
+    void notify_new_decision_level() override {
+        levels_opened++;
+        if (levels_opened == 2) {
+            raw->add_observed_var(1);
+            observed_v = true;
+        }
+    }
+
+    Lit cb_decide() override {
+        if (chose_x) return lit_Undef;
+        chose_x = true;
+        return Lit(0, false);
+    }
+
+    Lit cb_propagate() override {
+        if (!observed_v || propagated_not_z) return lit_Undef;
+        propagated_not_z = true;
+        return Lit(2, true);
+    }
+
+    Lit cb_add_reason_clause_lit(Lit propagated_lit) override {
+        EXPECT_EQ(propagated_lit, Lit(2, true));
+        if (next_reason_lit++ == 0) return propagated_lit;
+        next_reason_lit = 0;
+        return lit_Undef;
+    }
+};
+
+TEST(user_prop_observe, observing_during_new_level_discards_pending_decision)
+{
+    SATSolver s;
+    ObservesDuringNewLevelPropagator p;
+    p.raw = &s;
+    s.set_no_simplify();
+    s.new_vars(3); // x, v, z
+    s.add_clause(vector<Lit>{Lit(0, true), Lit(1, false)}); // x -> v
+    s.connect_external_propagator(&p);
+    s.add_observed_var(0);
+    s.add_observed_var(2);
+    s.phase(Lit(2, false)); // make the discarded internal decision z, not -z
+
+    ASSERT_EQ(s.solve(), l_True);
+    EXPECT_TRUE(p.observed_v);
+    EXPECT_TRUE(p.propagated_not_z);
+    EXPECT_EQ(s.get_model()[2], l_False);
+}
+
 TEST(user_prop_is_decision, unassigned_is_not_a_decision)
 {
     SATSolver s;

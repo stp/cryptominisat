@@ -1472,9 +1472,22 @@ lbool Searcher::new_decision() {
         sumDecisions++;
     }
 
-    // Increase decision level and enqueue 'next'
+    // Increase decision level and enqueue 'next'. Opening the level itself is
+    // observable, and the callback may observe an already assigned variable;
+    // that backtracks the search. In that case 'next' was chosen for a trail
+    // that no longer exists and must not be enqueued at the callback's new
+    // level (which can even be the root level).
     assert(value(next) == l_Undef);
+    const uint32_t level_before = decisionLevel();
+    const size_t trail_before = trail.size();
     new_decision_level();
+    if (decisionLevel() != level_before + 1
+        || trail.size() != trail_before
+        || value(next) != l_Undef
+        || !ext_pending_fixed.empty()
+    ) {
+        return l_Undef;
+    }
     enqueue<inprocess>(next);
 
     return l_Undef;
