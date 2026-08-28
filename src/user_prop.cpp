@@ -166,6 +166,14 @@ void Solver::remove_observed_var(const uint32_t outer_var)
         cancelUntil(varData[inter_var].level - 1);
     }
 
+    //A root-fixed variable observed behind the notification cursor is queued
+    //separately. If it is removed before the next callback, that notification
+    //is no longer part of the observed trail and must not be delivered.
+    ext_pending_fixed.erase(
+        std::remove_if(ext_pending_fixed.begin(), ext_pending_fixed.end(),
+            [outer_var](const Lit l) { return l.var() == outer_var; }),
+        ext_pending_fixed.end());
+
     varData[inter_var].observed = 0;
     ext_observed_vars.erase(
         std::remove(ext_observed_vars.begin(), ext_observed_vars.end(), outer_var),
