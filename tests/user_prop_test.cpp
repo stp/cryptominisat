@@ -1735,6 +1735,105 @@ TEST_F(UserPropLazyTest, lazy_with_the_whole_problem_in_the_propagator)
     }
 }
 
+// Propagates one literal lazily and then stops observing a variable that is
+// fixed at the root and still named by that propagation's reason. Tracks the
+// trail itself rather than through MirrorPropagator, which would compare its
+// own view against the solver's and rightly complain about the dropped
+// variable still sitting in its level-0 prefix.
+class DropsAFixedVarPropagator : public ExternalPropagator
+{
+public:
+    Solver* raw = nullptr;
+    vector<lbool> value_of;      // indexed by outer var
+    vector<vector<Lit>> stack;   // so that backtracking undoes assignments
+    vector<Lit> reason;          // OUTER, reason[0] is the literal it explains
+    uint32_t drop_var = 0;
+    size_t next_lit = 0;
+    bool propagated = false;
+    uint32_t num_explanations = 0;
+
+    void start(Solver* _raw, uint32_t nvars) {
+        raw = _raw;
+        value_of.assign(nvars, l_Undef);
+        stack.assign(1, {});
+    }
+    lbool val(const Lit l) const {
+        const lbool v = value_of[l.var()];
+        if (v == l_Undef) return l_Undef;
+        return l.sign() ? (v == l_True ? l_False : l_True) : v;
+    }
+
+    void notify_assignment(const vector<Lit>& lits) override {
+        for(const Lit l: lits) {
+            value_of[l.var()] = l.sign() ? l_False : l_True;
+            stack.back().push_back(l);
+        }
+    }
+    void notify_new_decision_level() override { stack.push_back({}); }
+    void notify_backtrack(size_t new_level) override {
+        for(size_t i = new_level+1; i < stack.size(); i++) {
+            for(const Lit l: stack[i]) value_of[l.var()] = l_Undef;
+        }
+        stack.resize(new_level+1);
+    }
+    bool cb_check_found_model(const vector<Lit>&) override { return true; }
+    bool cb_has_external_clause(bool& is_forgettable) override {
+        is_forgettable = false;
+        return false;
+    }
+    Lit cb_add_external_clause_lit() override { return lit_Undef; }
+
+    Lit cb_propagate() override {
+        if (propagated || val(reason[0]) != l_Undef) return lit_Undef;
+        for(size_t i = 1; i < reason.size(); i++) {
+            if (val(reason[i]) != l_False) return lit_Undef;
+        }
+        propagated = true;
+        //...and from here on the propagator has no further use for it
+        raw->remove_observed_var(drop_var);
+        return reason[0];
+    }
+    Lit cb_add_reason_clause_lit(Lit) override {
+        if (next_lit == 0) num_explanations++;
+        if (next_lit == reason.size()) { next_lit = 0; return lit_Undef; }
+        return reason[next_lit++];
+    }
+};
+
+TEST_F(UserPropLazyTest, a_lazy_reason_may_name_a_dropped_root_fixed_variable)
+{
+    // 1 is fixed at the root, and the propagator knows 1 & 2 -> 3. It
+    // propagates 3 on the assumption level and drops 1 in the same breath;
+    // assuming -3 then forces the reason to be materialised, and it still names
+    // the variable nobody observes any more. remove_observed_var() cannot have
+    // backtracked over a root assignment, so the reason is not the propagator's
+    // fault and must not be treated as one.
+    conf.ext_lazy_reasons = true;
+    DropsAFixedVarPropagator dp;
+    dp.reason = str_to_cl("3, -1, -2", false); // unsorted: reason[0] is what it explains
+    dp.drop_var = 0;
+
+    delete s;
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&dp);
+    s->new_vars(6);
+    s->add_clause_outside(str_to_cl("1"));
+    s->add_clause_outside(str_to_cl("4, 5"));
+    for(uint32_t v = 0; v < 6; v++) s->add_observed_var(v);
+    dp.start(s, 6);
+
+    vector<Lit> assumps = {Lit(1, false), Lit(2, true)};
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_EQ(s->solve_with_assumptions(&assumps), l_False);
+    EXPECT_TRUE(dp.propagated);
+    EXPECT_GT(dp.num_explanations, 0U);
+    EXPECT_FALSE(s->is_observed_var(0));
+    EXPECT_FALSE(s->conflict.empty());
+    // and the solver is still usable without those assumptions
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_EQ(s->solve_with_assumptions(), l_True);
+}
+
 }
 
 ////////////////////////////

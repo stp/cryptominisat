@@ -490,6 +490,16 @@ vector<Lit>* PropEngine::get_ext_reason(const Lit lit)
         release_assert(l.var() < nVarsOuter() &&
             "external reason clause over a variable that does not exist");
         const Lit inter = map_outer_to_inter(l);
+        //A literal falsified at the root carries no information -- conflict
+        //analysis skips level 0 anyway -- and it is the one thing a reason
+        //clause may legitimately mention that is no longer observed:
+        //remove_observed_var() only backtracks over assignments above the root,
+        //so a propagation made while the variable was still observed can
+        //outlive it. Drop it before the check rather than aborting on it.
+        if (value(inter) == l_False && varData[inter.var()].level == 0) {
+            l = ext_prop->cb_add_reason_clause_lit(elit);
+            continue;
+        }
         release_assert(varData[inter.var()].observed &&
             "external reason clauses must only mention observed variables");
         ret->push_back(inter);
