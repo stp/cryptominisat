@@ -1422,8 +1422,13 @@ lbool Solver::solve_with_assumptions(
 
     //CaDiCaL calls 'lucky_phases' here, after preprocessing and before the CDCL
     //loop. Assumptions and BNNs are not handled, as in CaDiCaL.
+    //
+    //IPASIR-UP: nor is an external propagator. A lucky assignment is built and
+    //returned outside the CDCL loop, so it would ignore the phases pinned
+    //through SATSolver::phase() and never be put to the propagator at all.
     if (status == l_Undef && conf.lucky && nVars() > 0
         && assumptions.empty() && bnns.empty() && !fast_backw.fast_backw_on
+        && ext_prop == nullptr
     ) {
         Lucky lucky(this);
         status = lucky.doit();

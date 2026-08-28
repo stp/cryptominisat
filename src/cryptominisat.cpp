@@ -2024,3 +2024,84 @@ DLL_PUBLIC bool SATSolver::get_opt_sampl_vars_set() const {
     Solver& s = *data->solvers[0];
     return s.conf.opt_sampling_vars_set;
 }
+
+////////////////////////////
+// IPASIR-UP: external (user) propagator. See user_prop.h.
+////////////////////////////
+
+namespace {
+//The propagator interface is only defined against a single search: make sure
+//the variables the user has asked for actually exist before we talk about them.
+void ext_flush_vars(CMSatPrivateData* data)
+{
+    if (data->vars_to_add == 0) return;
+    data->solvers[0]->new_vars(data->vars_to_add);
+    data->vars_to_add = 0;
+}
+}
+
+DLL_PUBLIC void SATSolver::connect_external_propagator(ExternalPropagator* p)
+{
+    if (data->solvers.size() > 1) {
+        const char err[] = "ERROR: An external propagator cannot be used in multi-threaded mode";
+        std::cerr << err << endl;
+        throw std::runtime_error(err);
+    }
+    if (data->log) (*data->log) << "c Solver::connect_external_propagator()" << endl;
+
+    ext_flush_vars(data);
+    data->solvers[0]->connect_external_propagator(p);
+}
+
+DLL_PUBLIC void SATSolver::disconnect_external_propagator()
+{
+    if (data->log) (*data->log) << "c Solver::disconnect_external_propagator()" << endl;
+    data->solvers[0]->disconnect_external_propagator();
+}
+
+DLL_PUBLIC void SATSolver::add_observed_var(uint32_t var)
+{
+    if (data->log) (*data->log) << "c Solver::add_observed_var( " << var << " )" << endl;
+    ext_flush_vars(data);
+    data->solvers[0]->add_observed_var(var);
+}
+
+DLL_PUBLIC void SATSolver::remove_observed_var(uint32_t var)
+{
+    if (data->log) (*data->log) << "c Solver::remove_observed_var( " << var << " )" << endl;
+    ext_flush_vars(data);
+    data->solvers[0]->remove_observed_var(var);
+}
+
+DLL_PUBLIC void SATSolver::reset_observed_vars()
+{
+    if (data->log) (*data->log) << "c Solver::reset_observed_vars()" << endl;
+    data->solvers[0]->reset_observed_vars();
+}
+
+DLL_PUBLIC bool SATSolver::is_observed_var(uint32_t var) const
+{
+    return data->solvers[0]->is_observed_var(var);
+}
+
+DLL_PUBLIC bool SATSolver::is_decision(Lit lit) const
+{
+    return data->solvers[0]->ext_is_decision(lit);
+}
+
+DLL_PUBLIC void SATSolver::force_backtrack(uint32_t new_level)
+{
+    data->solvers[0]->ext_force_backtrack(new_level);
+}
+
+DLL_PUBLIC void SATSolver::phase(Lit lit)
+{
+    ext_flush_vars(data);
+    data->solvers[0]->ext_phase(lit);
+}
+
+DLL_PUBLIC void SATSolver::unphase(uint32_t var)
+{
+    ext_flush_vars(data);
+    data->solvers[0]->ext_unphase(var);
+}

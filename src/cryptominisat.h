@@ -30,6 +30,7 @@ THE SOFTWARE.
 #include <limits>
 #include <cstdio>
 #include "solvertypesmini.h"
+#include "user_prop.h"
 
 namespace CMSat {
     struct CMSatPrivateData;
@@ -87,6 +88,41 @@ namespace CMSat {
         const std::vector<lbool>& get_model() const; //get model that satisfies the problem. Only makes sense if previous solve()/simplify() call was l_True
         const std::vector<Lit>& get_conflict() const; //get conflict in terms of the assumptions given in case the previous call to solve() was l_False
         bool okay() const; //the problem is still solveable, i.e. the empty clause hasn't been derived
+
+        ////////////////////////////
+        // IPASIR-UP: external (user) propagator
+        //
+        // See user_prop.h for the ExternalPropagator interface itself. At most
+        // one propagator can be connected, and only to a single-threaded
+        // solver. While one is connected, Gauss-Jordan elimination and
+        // chronological backtracking are switched off, and every observed
+        // variable is frozen: it is never eliminated, replaced or renumbered
+        // away, so the propagator's view of it stays valid.
+        ////////////////////////////
+
+        void connect_external_propagator(ExternalPropagator* p);
+        void disconnect_external_propagator(); //also un-observes every variable
+
+        // Declare a variable relevant to the propagator. All IPASIR-UP calls
+        // are over observed variables only. May be called during solve() from
+        // inside a callback, but the variable must already exist.
+        void add_observed_var(uint32_t var);
+        void remove_observed_var(uint32_t var); //only when unassigned
+        void reset_observed_vars();
+        bool is_observed_var(uint32_t var) const;
+
+        // True if the (observed, assigned) literal was assigned by a decision.
+        bool is_decision(Lit lit) const;
+
+        // Force the solver to backtrack. Only legal from inside cb_decide() or
+        // cb_check_found_model(); ignored otherwise, or if new_level is not
+        // below the current decision level.
+        void force_backtrack(uint32_t new_level);
+
+        // Force the branching polarity of a variable, or hand it back to the
+        // solver's own polarity heuristic.
+        void phase(Lit lit);
+        void unphase(uint32_t var);
 
         ////////////////////////////
         // Debug all calls for later replay with --debuglit FILENAME

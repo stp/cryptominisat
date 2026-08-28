@@ -636,6 +636,10 @@ inline bool Searcher::decide_phase(const uint32_t var, const bool target) const
 
 inline bool Searcher::pick_polarity(const uint32_t var)
 {
+    //IPASIR-UP: SATSolver::phase() pins the polarity, whatever the current
+    //polarity mode is.
+    if (varData[var].forced_polarity_set) return varData[var].forced_polarity;
+
     switch(conf.polarity_mode) {
         case PolarityMode::polarmode_neg:
             return false;
