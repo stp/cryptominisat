@@ -467,6 +467,36 @@ TEST(user_prop_connect, connect_and_disconnect)
     EXPECT_EQ(s.solve(), l_True);
 }
 
+TEST(user_prop_connect, multi_threading_is_refused)
+{
+    // Connecting first, before any variable exists, used to slip past the
+    // check: set_num_threads() would then be accepted, and the next call that
+    // flushed the pending variables would hand them to thread 0 alone.
+    {
+        SATSolver s;
+        NoopPropagator p;
+        s.connect_external_propagator(&p);
+        EXPECT_THROW(s.set_num_threads(4), std::runtime_error);
+    }
+
+    // ...and the other way round. phase() and unphase() are the only calls of
+    // this family that work without a propagator, so they are the ones that
+    // can reach a multi-threaded solver at all.
+    {
+        SATSolver s;
+        NoopPropagator p;
+        s.set_num_threads(4);
+        EXPECT_THROW(s.connect_external_propagator(&p), std::runtime_error);
+        s.new_vars(4);
+        EXPECT_THROW(s.phase(Lit(0, false)), std::runtime_error);
+        EXPECT_THROW(s.unphase(0), std::runtime_error);
+
+        // the variables are still pending, so the solver itself is unharmed
+        s.add_clause(str_to_cl("1, 2"));
+        EXPECT_EQ(s.solve(), l_True);
+    }
+}
+
 TEST(user_prop_connect, no_propagator_no_change)
 {
     // The exact same problem with and without a no-op propagator must give the
