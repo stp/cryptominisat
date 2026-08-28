@@ -209,6 +209,22 @@ class Solver : public Searcher
 
         bool prop_at_head() const;
         void set_decision_var(const uint32_t var);
+
+        ///////////////////
+        // IPASIR-UP (see user_prop.h and user_prop.cpp)
+        // All variables/literals below are in OUTER numbering.
+        ///////////////////
+        void connect_external_propagator(ExternalPropagator* p);
+        void disconnect_external_propagator();
+        void add_observed_var(const uint32_t outer_var);
+        void remove_observed_var(const uint32_t outer_var);
+        void reset_observed_vars();
+        bool is_observed_var(const uint32_t outer_var) const;
+        bool ext_is_decision(const Lit outer_lit) const;
+        void ext_force_backtrack(const uint32_t new_level);
+        void ext_phase(const Lit outer_lit);
+        void ext_unphase(const uint32_t outer_var);
+
         bool fully_enqueue_these(const vector<Lit>& toEnqueue);
         bool fully_enqueue_this(const Lit lit_ID);
 

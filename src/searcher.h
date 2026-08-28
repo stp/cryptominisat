@@ -563,6 +563,10 @@ inline void Searcher::decayClauseAct()
 
 inline bool Searcher::pick_polarity(const uint32_t var)
 {
+    //IPASIR-UP: SATSolver::phase() pins the polarity, whatever the current
+    //polarity mode is.
+    if (varData[var].forced_polarity_set) return varData[var].forced_polarity;
+
     switch(polarity_mode) {
         case PolarityMode::polarmode_neg:
             return false;

@@ -29,6 +29,7 @@ THE SOFTWARE.
 #include "constants.h"
 #include "solvertypesmini.h"
 #include "vardata.h"
+#include "user_prop.h"
 #include "propby.h"
 #include "solverconf.h"
 #include "solvertypes.h"
@@ -163,6 +164,29 @@ public:
     vector<vector<Lit>> bnn_reasons;
     vector<Lit> bnn_confl_reason;
     vector<uint32_t> bnn_reasons_empty_slots;
+
+    ///////////////////
+    // IPASIR-UP (see user_prop.h)
+    ///////////////////
+    ExternalPropagator* ext_prop = nullptr;
+    /// Observed variables, in OUTER numbering and in the order they were
+    /// observed. Outer numbering is stable across renumbering, so this survives
+    /// Solver::renumber_variables(). The matching per-variable flag lives in
+    /// VarData::observed (INTER numbering) for O(1) tests on the trail.
+    vector<uint32_t> ext_observed_vars;
+    /// While set, no notification reaches the propagator: the solver is doing
+    /// speculative work of its own (probing, distilling, in-tree probing, ...)
+    /// whose assignments are not part of the search.
+    bool ext_prop_private_steps = false;
+    /// force_backtrack() is only honoured from inside cb_decide() and
+    /// cb_check_found_model(); the request is recorded here and acted on once
+    /// the callback has returned.
+    bool ext_forced_backtrack_allowed = false;
+    bool ext_forced_backtrack_set = false;
+    uint32_t ext_forced_backtrack_level = 0;
+    [[nodiscard]] bool ext_prop_active() const {
+        return ext_prop != nullptr && !ext_prop_private_steps;
+    }
     BinTriStats binTri;
     LitStats litStats;
     int32_t clauseID = 0;
