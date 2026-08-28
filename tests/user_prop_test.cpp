@@ -1749,6 +1749,50 @@ struct UserPropOtherApiTest : public ::testing::Test {
 // implied_by(), minimize_clause() and probe() all open a decision level of
 // their own, outside the search. None of that is the propagator's business.
 
+// Un-observing a variable during the search has to backtrack below its
+// assignment, so that no unexplained propagation over it is left behind.
+class UnobservingPropagator : public MirrorPropagator
+{
+public:
+    Solver* raw = nullptr;
+    uint32_t budget = 0;
+    uint32_t next_var = 0;
+    uint32_t num_removed = 0;
+
+    Lit cb_decide() override {
+        if (budget > 0 && stack.size() > 2) {
+            // pick something observed and assigned above the root
+            for(uint32_t tries = 0; tries < 32; tries++) {
+                const uint32_t v = next_var++ % assigned.size();
+                if (!raw->is_observed_var(v) || !assigned[v]) continue;
+                budget--;
+                num_removed++;
+                raw->remove_observed_var(v);
+                break;
+            }
+        }
+        return lit_Undef;
+    }
+};
+
+TEST_F(UserPropOtherApiTest, remove_observed_var_during_solving)
+{
+    UnobservingPropagator up;
+    delete s;
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&up);
+    add_random_3sat(s, 60, 240, 5);
+    for(uint32_t v = 0; v < 60; v++) s->add_observed_var(v);
+    up.raw = s;
+    up.budget = 25;
+    up.start(s, 60);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_NE(s->solve_with_assumptions(), l_Undef);
+    EXPECT_GT(up.num_removed, 0U);
+    EXPECT_GT(up.num_comparisons, 0U);
+}
+
 TEST_F(UserPropOtherApiTest, implied_by_does_not_reach_the_propagator)
 {
     setup(40, 100, 7);
