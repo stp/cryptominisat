@@ -1846,6 +1846,35 @@ TEST_F(UserPropLazyTest, lazy_reasons_are_actually_used_in_conflict_analysis)
     EXPECT_LT(p.num_explanations, p.num_propagations);
 }
 
+TEST_F(UserPropLazyTest, explanations_are_lazy_by_default)
+{
+    // The paper's design, and CaDiCaL's: a propagation is assigned first and
+    // explained only if conflict analysis ever resolves through it. Nothing
+    // needs switching on for that -- only proof logging switches it off.
+    EXPECT_TRUE(SolverConf().ext_lazy_reasons);
+
+    const uint32_t nvars = 25;
+    auto cls = gen_3sat(nvars, 100, 9);
+    const lbool expected = solve_plain(cls, nvars);
+
+    delete s;
+    conf = SolverConf();
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&p);
+    s->new_vars(nvars);
+    for(uint32_t v = 0; v < nvars; v++) s->add_observed_var(v);
+    p.theory = cls;
+    p.start_theory(s, nvars);
+    must_inter.store(false, std::memory_order_relaxed);
+    ASSERT_EQ(s->solve_with_assumptions(), expected);
+
+    EXPECT_GT(s->ext_stats.props, 0U);
+    EXPECT_GT(s->ext_stats.props_lazy, 0U);
+    // ...and fewer reasons are asked for than literals were propagated
+    EXPECT_EQ(s->ext_stats.explanations, p.num_explanations);
+    EXPECT_LT(p.num_explanations, p.num_propagations);
+}
+
 // Resets observation immediately after lazily propagating x -> y. Without a
 // backtrack, y keeps an Ext reason placeholder after every variable mentioned
 // by that reason has become unobserved; the first conflict that resolves through

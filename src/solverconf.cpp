@@ -168,7 +168,7 @@ DLL_PUBLIC SolverConf::SolverConf() :
 
         //Chono BT
         , diff_declev_for_chrono (20)
-        , ext_lazy_reasons (false)
+        , ext_lazy_reasons (true)
 
         //decision-based clause generation. These values have been validated
         //see 8099966.wlm01

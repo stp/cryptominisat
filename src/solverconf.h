@@ -308,9 +308,10 @@ class DLL_PUBLIC SolverConf
 
         //IPASIR-UP: explain external propagations only when conflict analysis
         //needs the reason, rather than asking for it straight away. Saves
-        //learning reason clauses that are never used, at the price of not being
-        //able to produce a proof. See Searcher::external_propagate() for why
-        //the default is the other way round.
+        //learning reason clauses that are never used. Ignored while FRAT is
+        //on: a propagation without a reason cannot be written down, so the
+        //reason is then asked for eagerly regardless. See
+        //Searcher::external_propagate().
         bool ext_lazy_reasons;
 
         //decision-based conflict clause generation

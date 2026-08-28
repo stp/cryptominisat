@@ -543,26 +543,26 @@ clauses it wants to add. Either may change the trail, so each round ends with
 propagation and a fresh notification, and adding a clause earns the propagator
 another turn.
 
-Propagated literals are explained eagerly by default: the reason clause is asked
-for straight away and added like any other external clause, which is exactly what
-makes the literal end up on the trail (or produces the conflict). Conflict
-analysis therefore needs to know nothing about external propagation.
+Propagated literals are explained lazily by default: the literal is assigned
+with a placeholder reason, and the clause is asked for only if conflict analysis
+ever resolves through it (PropEngine::get_ext_reason). That is what the paper
+puts at the centre of the interface (section 2.3) and what CaDiCaL does, and it
+means that only the reason clauses that are actually used are ever learned.
 
-That is a deliberate departure from the paper, which puts delayed explanation at
-the centre of the interface (section 2.3) so that only useful reason clauses are
-ever learned -- and from CaDiCaL, which always assigns the literal at the current
-level with a placeholder reason and materialises the clause during conflict
-analysis. The reason to do otherwise here is proof logging: an unexplained
-propagation cannot be written down, and CryptoMiniSat records its whole
-derivation in FRAT. Explaining eagerly keeps every step of the search on paper.
+Two situations ask for the reason straight away instead, and add it like any
+other external clause -- which is then exactly what makes the literal end up on
+the trail, or produces the conflict: the root, where the assignment is permanent
+and would otherwise keep an unexplained reason around forever, and proof
+logging, where every step has to be written down in FRAT. Setting
+conf.ext_lazy_reasons to false (SATSolver::set_lazy_external_reasons) makes
+eager explanation the rule rather than the exception.
 
-It is not free. Because the reason clause is woven into the trail by
-add_external_clause(), a propagation whose antecedents all sit below the current
-level backtracks to where it should have been made -- better information, at the
-price of the search above it. An eager theory propagator, which propagates as
-soon as its antecedent completes, never triggers that; one that catches up in
-batches will. set_lazy_external_reasons() turns the paper's behaviour on, at the
-cost of not being able to produce a proof.
+Eager explanation is not free. Because the reason clause is woven into the trail
+by add_external_clause(), a propagation whose antecedents all sit below the
+current level backtracks to where it should have been made -- better
+information, at the price of the search above it. An eager theory propagator,
+which propagates as soon as its antecedent completes, never triggers that; one
+that catches up in batches will.
 
 Note that the lazy path does not follow CaDiCaL in recalculating assignment
 levels afterwards (its exteagerrecalc): a literal assigned lazily keeps the
