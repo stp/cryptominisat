@@ -1827,6 +1827,88 @@ TEST_F(UserPropLazyTest, lazy_reasons_are_actually_used_in_conflict_analysis)
     EXPECT_LT(p.num_explanations, p.num_propagations);
 }
 
+// Resets observation immediately after lazily propagating x -> y. Without a
+// backtrack, y keeps an Ext reason placeholder after every variable mentioned
+// by that reason has become unobserved; the first conflict that resolves through
+// y then has no legal way to obtain its explanation.
+class ResetsAfterLazyPropagation : public ExternalPropagator
+{
+public:
+    Solver* raw = nullptr;
+    vector<vector<Lit>> stack = vector<vector<Lit>>(1);
+    size_t next_reason_lit = 0;
+    uint32_t explanations = 0;
+    bool x_is_true = false;
+    bool propagated_y = false;
+    bool reset_done = false;
+
+    void notify_assignment(const vector<Lit>& lits) override {
+        for(const Lit l: lits) {
+            stack.back().push_back(l);
+            if (l == Lit(0, false)) x_is_true = true;
+        }
+    }
+    void notify_new_decision_level() override { stack.push_back({}); }
+    void notify_backtrack(size_t new_level) override {
+        for(size_t level = new_level + 1; level < stack.size(); level++) {
+            for(const Lit l: stack[level]) {
+                if (l.var() == 0) x_is_true = false;
+            }
+        }
+        stack.resize(new_level + 1);
+    }
+    bool cb_check_found_model(const vector<Lit>&) override { return true; }
+    bool cb_has_external_clause(bool& is_forgettable) override {
+        is_forgettable = false;
+        return false;
+    }
+    Lit cb_add_external_clause_lit() override { return lit_Undef; }
+
+    Lit cb_propagate() override {
+        if (!propagated_y && x_is_true) {
+            propagated_y = true;
+            return Lit(1, false);
+        }
+        if (propagated_y && !reset_done) {
+            reset_done = true;
+            raw->reset_observed_vars();
+        }
+        return lit_Undef;
+    }
+    Lit cb_add_reason_clause_lit(Lit propagated_lit) override {
+        explanations++;
+        EXPECT_EQ(propagated_lit, Lit(1, false));
+        const Lit reason[] = {Lit(1, false), Lit(0, true)};
+        if (next_reason_lit == 2) {
+            next_reason_lit = 0;
+            return lit_Undef;
+        }
+        return reason[next_reason_lit++];
+    }
+};
+
+TEST_F(UserPropLazyTest, resetting_observation_retires_live_lazy_reasons)
+{
+    conf.ext_lazy_reasons = true;
+    ResetsAfterLazyPropagation rp;
+    delete s;
+    s = new Solver(&conf, &must_inter);
+    rp.raw = s;
+    s->connect_external_propagator(&rp);
+    s->new_vars(4); // x, y, a, b
+    s->add_clause_outside(str_to_cl("-2, -3, 4"));
+    s->add_clause_outside(str_to_cl("-2, -3, -4"));
+    for(uint32_t v = 0; v < 4; v++) s->add_observed_var(v);
+
+    vector<Lit> assumptions = {Lit(0, false), Lit(2, false)};
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_EQ(s->solve_with_assumptions(&assumptions), l_True);
+    EXPECT_TRUE(rp.propagated_y);
+    EXPECT_TRUE(rp.reset_done);
+    EXPECT_EQ(rp.explanations, 0U);
+    for(uint32_t v = 0; v < 4; v++) EXPECT_FALSE(s->is_observed_var(v));
+}
+
 TEST_F(UserPropLazyTest, lazy_is_ignored_under_frat)
 {
     // Reason clauses have to be in the proof, so they are asked for eagerly.
