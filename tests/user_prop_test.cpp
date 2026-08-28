@@ -1041,6 +1041,56 @@ TEST_F(UserPropNotifyTest, observing_a_fixed_variable_after_a_solve)
     EXPECT_GT(p.num_comparisons, 0U);
 }
 
+// Observes a second variable from inside the notification that hands over the
+// first one.
+class ObservesFromNotificationPropagator : public MirrorPropagator
+{
+public:
+    uint32_t on_seeing = 0;
+    uint32_t then_observe = 1;
+    bool done = false;
+
+    void notify_assignment(const vector<Lit>& lits) override {
+        MirrorPropagator::notify_assignment(lits);
+        if (done) return;
+        for(const Lit l: lits) {
+            if (l.var() != on_seeing) continue;
+            done = true;
+            s->add_observed_var(then_observe);
+        }
+    }
+};
+
+TEST_F(UserPropNotifyTest, observing_a_fixed_variable_from_inside_a_notification)
+{
+    // Vars 1 and 2 are both fixed at the root and behind the notification
+    // cursor by the time they are observed, so each has to be handed over
+    // separately. Observing var 2 from inside the notification about var 1
+    // must not lose it.
+    ObservesFromNotificationPropagator op;
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&op);
+    s->new_vars(6);
+    s->add_clause_outside(str_to_cl("1"));
+    s->add_clause_outside(str_to_cl("-2"));
+    s->add_clause_outside(str_to_cl("3, 4"));
+    s->add_clause_outside(str_to_cl("5, 6"));
+    for(uint32_t v = 2; v < 6; v++) s->add_observed_var(v);
+    op.start(s, 6);
+    must_inter.store(false, std::memory_order_relaxed);
+    ASSERT_EQ(s->solve_with_assumptions(), l_True);
+    ASSERT_FALSE(op.done);
+
+    s->add_observed_var(0);
+    must_inter.store(false, std::memory_order_relaxed);
+    ASSERT_EQ(s->solve_with_assumptions(), l_True);
+    EXPECT_TRUE(op.done);
+    EXPECT_TRUE(s->is_observed_var(1));
+    EXPECT_EQ(op.value_of[0], l_True);
+    EXPECT_EQ(op.value_of[1], l_False);
+    EXPECT_GT(op.num_comparisons, 0U);
+}
+
 TEST_F(UserPropNotifyTest, opening_a_level_hands_over_what_is_still_owed)
 {
     // A level opened while the propagator is still owed assignments would put

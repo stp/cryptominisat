@@ -427,11 +427,15 @@ void PropEngine::notify_assignments()
     }
 
     //Variables that were already fixed when they became observed. Their trail
-    //position is behind the cursor, so they are kept separately.
-    if (!ext_pending_fixed.empty()) {
+    //position is behind the cursor, so they are kept separately. The callback
+    //may observe yet another fixed variable, which lands in ext_pending_fixed
+    //while it runs -- so hand over a batch at a time, from a buffer of its
+    //own, until nothing is left.
+    while (!ext_pending_fixed.empty()) {
         assert(decisionLevel() == 0);
-        ext_prop->notify_assignment(ext_pending_fixed);
-        ext_pending_fixed.clear();
+        ext_notify_lits.clear();
+        ext_notify_lits.swap(ext_pending_fixed);
+        ext_prop->notify_assignment(ext_notify_lits);
     }
 
     while (ext_notified < trail.size()) {
