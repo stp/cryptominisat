@@ -617,12 +617,22 @@ lbool Searcher::external_check_solution()
         ext_model.push_back(Lit(outer_var, value(v) == l_False));
     }
 
+    //The propagator is allowed to observe new variables while looking at the
+    //model, which backtracks; watch for that as well as for a forced backtrack.
+    const size_t trail_before = trail.size();
+    const uint32_t level_before = decisionLevel();
+
     ext_forced_backtrack_allowed = true;
     const bool consistent = ext_prop->cb_check_found_model(ext_model);
     ext_forced_backtrack_allowed = false;
 
     if (ext_forced_backtrack_set) {
         apply_ext_forced_backtrack();
+        return l_Undef;
+    }
+    if (trail.size() != trail_before || decisionLevel() != level_before) {
+        //The assignment is not complete any more, whatever the answer was.
+        verb_print(6, "[user-prop] the trail moved during cb_check_found_model()");
         return l_Undef;
     }
     if (consistent) return l_True;

@@ -428,6 +428,9 @@ Lit HyperEngine::analyzeFail(const PropBy propBy)
 
         case xor_t:
         case bnn_t:
+        //IPASIR-UP: hyper-binary resolution only runs during inprocessing,
+        //where no external propagation can be on the trail.
+        case ext_t:
         case null_clause_t:
             assert(false);
             break;

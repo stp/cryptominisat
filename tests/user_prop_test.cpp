@@ -255,7 +255,7 @@ public:
             // Every literal we decided is reported as a decision; propagated
             // ones are not.
             for(const Lit l: model) {
-                if (s->ext_is_decision(l)) EXPECT_EQ(l.sign(), sign);
+                if (s->ext_is_decision(l)) { EXPECT_EQ(l.sign(), sign); }
             }
         }
         return true;
@@ -291,6 +291,141 @@ public:
         const vector<Lit>& cl = blocking[next_clause];
         if (next_lit == cl.size()) { next_lit = 0; next_clause++; return lit_Undef; }
         return cl[next_lit++];
+    }
+};
+
+// Everything at once, driven by a deterministic pseudo-random stream: observes
+// variables late, propagates sometimes, hands over clauses sometimes, forces
+// backtracking sometimes, and rejects any model that violates the theory it
+// holds. The answer must still be the one you get by simply adding all the
+// clauses up front.
+class AdversarialPropagator : public MirrorPropagator
+{
+public:
+    Solver* raw = nullptr;
+    vector<vector<Lit>> theory;      // sound clauses the solver never sees
+    vector<size_t> reason_for_lit;   // indexed by Lit::toInt()
+    vector<size_t> queued;           // theory clauses waiting to be handed over
+    size_t cur_clause = 0;
+    size_t cur_lit = 0;
+    uint32_t backtrack_budget = 0;
+    uint64_t rnd_state = 1;
+    size_t num_propagations = 0;
+    size_t num_clauses_given = 0;
+    size_t num_forced_backtracks = 0;
+    size_t num_late_observes = 0;
+    size_t num_rejected_models = 0;
+
+    uint32_t next() {
+        rnd_state = rnd_state * 6364136223846793005ULL + 1442695040888963407ULL;
+        return (uint32_t)(rnd_state >> 33);
+    }
+    bool chance(uint32_t percent) { return (next() % 100) < percent; }
+
+    void start_adversary(Solver* _s, uint32_t nvars, uint32_t seed) {
+        raw = _s;
+        start(_s, nvars);
+        reason_for_lit.assign(2*nvars, 0);
+        rnd_state = seed * 2862933555777941757ULL + 3037000493ULL;
+    }
+
+    bool all_observed(const vector<Lit>& cl) const {
+        for(const Lit l: cl) if (!raw->is_observed_var(l.var())) return false;
+        return true;
+    }
+
+    // Satisfied / falsified / unit under the propagator's own view.
+    bool is_satisfied(const vector<Lit>& cl) const {
+        for(const Lit l: cl) if (val(l) == l_True) return true;
+        return false;
+    }
+
+    Lit cb_propagate() override {
+        if (!chance(60)) return lit_Undef;
+        for(size_t i = 0; i < theory.size(); i++) {
+            if (!all_observed(theory[i])) continue;
+            Lit implied = lit_Undef;
+            bool satisfied = false;
+            uint32_t num_free = 0;
+            for(const Lit l: theory[i]) {
+                const lbool v = val(l);
+                if (v == l_True) { satisfied = true; break; }
+                if (v == l_Undef) { num_free++; implied = l; }
+            }
+            if (satisfied || num_free > 1) continue;
+            const Lit ret = (num_free == 1) ? implied : theory[i][0];
+            reason_for_lit[ret.toInt()] = i;
+            num_propagations++;
+            return ret;
+        }
+        return lit_Undef;
+    }
+
+    Lit cb_add_reason_clause_lit(Lit propagated_lit) override {
+        if (cur_lit == 0) cur_clause = reason_for_lit[propagated_lit.toInt()];
+        const vector<Lit>& cl = theory[cur_clause];
+        if (cur_lit == cl.size()) { cur_lit = 0; return lit_Undef; }
+        return cl[cur_lit++];
+    }
+
+    bool cb_has_external_clause(bool& is_forgettable) override {
+        is_forgettable = chance(50);
+        if (!queued.empty()) return true;
+        // occasionally volunteer a clause nobody asked for
+        if (!chance(10)) return false;
+        for(uint32_t tries = 0; tries < 4; tries++) {
+            const size_t i = next() % theory.size();
+            if (all_observed(theory[i])) { queued.push_back(i); return true; }
+        }
+        return false;
+    }
+
+    Lit cb_add_external_clause_lit() override {
+        const vector<Lit>& cl = theory[queued.front()];
+        if (cur_lit == cl.size()) {
+            cur_lit = 0;
+            queued.erase(queued.begin());
+            num_clauses_given++;
+            return lit_Undef;
+        }
+        return cl[cur_lit++];
+    }
+
+    Lit cb_decide() override {
+        if (backtrack_budget > 0 && stack.size() > 3 && chance(20)) {
+            backtrack_budget--;
+            num_forced_backtracks++;
+            raw->ext_force_backtrack((uint32_t)(next() % (stack.size()-1)));
+        }
+        return lit_Undef;
+    }
+
+    bool cb_check_found_model(const vector<Lit>& model) override {
+        compare();
+        (void)model;
+
+        // The whole theory has to be expressible before it can be checked, so
+        // observe whatever is still missing. That backtracks, and the solver
+        // notices and carries on searching.
+        bool observed_something = false;
+        for(const auto& cl: theory) {
+            for(const Lit l: cl) {
+                if (!raw->is_observed_var(l.var())) {
+                    raw->add_observed_var(l.var());
+                    num_late_observes++;
+                    observed_something = true;
+                }
+            }
+        }
+        if (observed_something) return false;
+
+        for(size_t i = 0; i < theory.size(); i++) {
+            if (is_satisfied(theory[i])) continue;
+            queued.push_back(i);
+            num_rejected_models++;
+            return false;
+        }
+        return true;
     }
 };
 
@@ -475,8 +610,8 @@ TEST(user_prop_freeze, observed_var_survives_bve)
         std::string strategy = "occ-bve";
         EXPECT_EQ(s.simplify(nullptr, &strategy), l_Undef);
 
-        if (observe) EXPECT_FALSE(s.removed_var(2));
-        else EXPECT_TRUE(s.removed_var(2));
+        if (observe) { EXPECT_FALSE(s.removed_var(2)); }
+        else { EXPECT_TRUE(s.removed_var(2)); }
     }
 }
 
@@ -849,7 +984,7 @@ TEST_F(UserPropClauseTest, everything_through_the_propagator)
     auto cls = gen_3sat(nvars, 120, 3);
     const lbool expected = solve_plain(cls, nvars);
     ASSERT_EQ(solve_split(cls, nvars, 0), expected);
-    if (expected == l_True) EXPECT_TRUE(model_satisfies(s->get_model(), cls));
+    if (expected == l_True) { EXPECT_TRUE(model_satisfies(s->get_model(), cls)); }
 }
 
 TEST_F(UserPropClauseTest, many_seeds)
@@ -1058,7 +1193,7 @@ TEST_F(UserPropPropagateTest, whole_problem_in_the_propagator)
     auto cls = gen_3sat(nvars, 100, 9);
     const lbool expected = solve_plain(cls, nvars);
     ASSERT_EQ(solve_with_theory(cls, nvars, 0), expected);
-    if (expected == l_True) EXPECT_TRUE(model_satisfies(s->get_model(), cls));
+    if (expected == l_True) { EXPECT_TRUE(model_satisfies(s->get_model(), cls)); }
 }
 
 TEST_F(UserPropPropagateTest, many_seeds)
@@ -1367,6 +1502,169 @@ TEST_F(UserPropLazyTest, lazy_with_the_whole_problem_in_the_propagator)
         if (expected == l_True) {
             EXPECT_TRUE(model_satisfies(s->get_model(), cls)) << "seed " << seed;
         }
+    }
+}
+
+}
+
+////////////////////////////
+// WP7: everything at once
+////////////////////////////
+
+namespace CMSat {
+
+struct UserPropAdversaryTest : public ::testing::Test {
+    UserPropAdversaryTest() { must_inter.store(false, std::memory_order_relaxed); }
+    ~UserPropAdversaryTest() { delete s; delete ref; }
+
+    lbool solve_plain(const vector<vector<Lit>>& cls, uint32_t nvars) {
+        delete ref;
+        ref = new Solver(&conf, &must_inter);
+        ref->new_vars(nvars);
+        for(const auto& cl: cls) { vector<Lit> tmp = cl; ref->add_clause_outside(tmp); }
+        must_inter.store(false, std::memory_order_relaxed);
+        return ref->solve_with_assumptions();
+    }
+
+    lbool solve_adversarially(const vector<vector<Lit>>& cls, uint32_t nvars,
+                              size_t split, uint32_t seed, bool lazy)
+    {
+        delete s;
+        conf.ext_lazy_reasons = lazy;
+        s = new Solver(&conf, &must_inter);
+        s->connect_external_propagator(&p);
+        s->new_vars(nvars);
+        for(size_t i = 0; i < split; i++) {
+            vector<Lit> tmp = cls[i];
+            s->add_clause_outside(tmp);
+        }
+        // Only some variables are observed to begin with; the propagator asks
+        // for the rest while checking a model.
+        for(uint32_t v = 0; v < nvars; v++) if ((v + seed) % 3 != 0) s->add_observed_var(v);
+
+        p.theory.clear();
+        for(size_t i = split; i < cls.size(); i++) p.theory.push_back(cls[i]);
+        p.start_adversary(s, nvars, seed);
+        p.backtrack_budget = 40;
+
+        must_inter.store(false, std::memory_order_relaxed);
+        return s->solve_with_assumptions();
+    }
+
+    SolverConf conf;
+    Solver* s = nullptr;
+    Solver* ref = nullptr;
+    AdversarialPropagator p;
+    std::atomic<bool> must_inter;
+};
+
+TEST_F(UserPropAdversaryTest, everything_at_once)
+{
+    size_t total_forced = 0, total_late = 0, total_rejected = 0, total_given = 0;
+    for(uint32_t seed = 1; seed <= 25; seed++) {
+        const uint32_t nvars = 26;
+        auto cls = gen_3sat(nvars, 108, seed);
+        const lbool expected = solve_plain(cls, nvars);
+
+        for(int lazy = 0; lazy < 2; lazy++) {
+            p = AdversarialPropagator();
+            const lbool got = solve_adversarially(cls, nvars, cls.size()*2/3, seed, lazy == 1);
+            ASSERT_EQ(got, expected) << "seed " << seed << " lazy " << lazy;
+            if (expected == l_True) {
+                EXPECT_TRUE(model_satisfies(s->get_model(), cls))
+                    << "seed " << seed << " lazy " << lazy;
+            }
+            total_forced += p.num_forced_backtracks;
+            total_late += p.num_late_observes;
+            total_rejected += p.num_rejected_models;
+            total_given += p.num_clauses_given;
+        }
+    }
+    // make sure the interesting paths were actually taken
+    EXPECT_GT(total_forced, 0U);
+    EXPECT_GT(total_late, 0U);
+    EXPECT_GT(total_given, 0U);
+    EXPECT_GT(total_rejected, 0U);
+}
+
+TEST_F(UserPropAdversaryTest, everything_at_once_bigger)
+{
+    for(uint32_t seed = 100; seed <= 106; seed++) {
+        const uint32_t nvars = 60;
+        auto cls = gen_3sat(nvars, 245, seed);
+        const lbool expected = solve_plain(cls, nvars);
+        p = AdversarialPropagator();
+        ASSERT_EQ(solve_adversarially(cls, nvars, cls.size()/2, seed, seed % 2 == 0), expected)
+            << "seed " << seed;
+        if (expected == l_True) {
+            EXPECT_TRUE(model_satisfies(s->get_model(), cls)) << "seed " << seed;
+        }
+    }
+}
+
+TEST_F(UserPropAdversaryTest, everything_at_once_under_frat)
+{
+    for(uint32_t seed = 200; seed <= 204; seed++) {
+        const uint32_t nvars = 26;
+        auto cls = gen_3sat(nvars, 108, seed);
+        const lbool expected = solve_plain(cls, nvars);
+
+        const char* fname = "user_prop_adversary.frat";
+        FILE* f = fopen(fname, "wb");
+        ASSERT_NE(f, nullptr);
+
+        delete s;
+        s = new Solver(&conf, &must_inter);
+        s->add_frat(f);
+        s->connect_external_propagator(&p);
+        s->new_vars(nvars);
+        const size_t split = cls.size()*2/3;
+        for(size_t i = 0; i < split; i++) { vector<Lit> tmp = cls[i]; s->add_clause_outside(tmp); }
+        for(uint32_t v = 0; v < nvars; v++) if ((v + seed) % 3 != 0) s->add_observed_var(v);
+        p = AdversarialPropagator();
+        for(size_t i = split; i < cls.size(); i++) p.theory.push_back(cls[i]);
+        p.start_adversary(s, nvars, seed);
+        p.backtrack_budget = 40;
+
+        must_inter.store(false, std::memory_order_relaxed);
+        EXPECT_EQ(s->solve_with_assumptions(), expected) << "seed " << seed;
+        delete s; s = nullptr;
+        fclose(f);
+        std::remove(fname);
+    }
+}
+
+TEST_F(UserPropAdversaryTest, everything_at_once_with_assumptions)
+{
+    for(uint32_t seed = 300; seed <= 308; seed++) {
+        const uint32_t nvars = 26;
+        auto cls = gen_3sat(nvars, 100, seed);
+
+        // A handful of assumptions, the same for both solves.
+        vector<Lit> assumps;
+        for(uint32_t i = 0; i < 3; i++) assumps.push_back(Lit((seed*7+i) % nvars, (i%2) == 0));
+
+        delete ref;
+        ref = new Solver(&conf, &must_inter);
+        ref->new_vars(nvars);
+        for(const auto& cl: cls) { vector<Lit> tmp = cl; ref->add_clause_outside(tmp); }
+        must_inter.store(false, std::memory_order_relaxed);
+        const lbool expected = ref->solve_with_assumptions(&assumps);
+
+        delete s;
+        s = new Solver(&conf, &must_inter);
+        s->connect_external_propagator(&p);
+        s->new_vars(nvars);
+        const size_t split = cls.size()/2;
+        for(size_t i = 0; i < split; i++) { vector<Lit> tmp = cls[i]; s->add_clause_outside(tmp); }
+        for(uint32_t v = 0; v < nvars; v++) s->add_observed_var(v);
+        p = AdversarialPropagator();
+        for(size_t i = split; i < cls.size(); i++) p.theory.push_back(cls[i]);
+        p.start_adversary(s, nvars, seed);
+        p.backtrack_budget = 20;
+
+        must_inter.store(false, std::memory_order_relaxed);
+        ASSERT_EQ(s->solve_with_assumptions(&assumps), expected) << "seed " << seed;
     }
 }
 
