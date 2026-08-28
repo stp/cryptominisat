@@ -105,9 +105,16 @@ namespace CMSat {
 
         // Declare a variable relevant to the propagator. All IPASIR-UP calls
         // are over observed variables only. May be called during solve() from
-        // inside a callback, but the variable must already exist.
+        // inside any callback, but the variable must already exist. Observing
+        // one that is already assigned makes the solver backtrack over the
+        // assignment, so that it is made -- and notified -- again in the normal
+        // way: a callback that does this cannot assume the trail it was looking
+        // at is still there afterwards.
         void add_observed_var(uint32_t var);
-        void remove_observed_var(uint32_t var); //only when unassigned
+        // Only for a variable that is unassigned, or fixed at the root. Anything
+        // else is backtracked over first, so that no propagation the solver
+        // cannot explain any more is left in the implication graph.
+        void remove_observed_var(uint32_t var);
         void reset_observed_vars();
         bool is_observed_var(uint32_t var) const;
 

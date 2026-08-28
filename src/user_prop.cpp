@@ -355,18 +355,27 @@ PropBy Searcher::add_external_clause(const bool forgettable_in, const Lit reason
     while (l != lit_Undef) {
         release_assert(l.var() < nVarsOuter() &&
             "external clause over a variable that does not exist");
-        const Lit inter = map_outer_to_inter(l);
-        release_assert(varData[inter.var()].observed &&
-            "external clauses must only mention observed variables");
         if (l == reason_for) saw_reason_lit = true;
         ext_cl_outer.push_back(l);
-        ext_cl.push_back(inter);
         l = (reason_for == lit_Undef)
             ? ext_prop->cb_add_external_clause_lit()
             : ext_prop->cb_add_reason_clause_lit(reason_for);
     }
     release_assert((reason_for == lit_Undef || saw_reason_lit) &&
         "the reason clause of an external propagation must contain the propagated literal");
+
+    //Only translate once the whole clause is in. The callbacks above are allowed
+    //to observe variables, and observing one that renumbering had moved out of
+    //the search puts it back with CNF::new_var() -- which swaps it with whatever
+    //sat in the first slot outside the search, and so changes *that* variable's
+    //inter number too. A literal translated earlier in the read would still be
+    //holding the old one, and would quietly name a different variable.
+    for(const Lit outer: ext_cl_outer) {
+        const Lit inter = map_outer_to_inter(outer);
+        release_assert(varData[inter.var()].observed &&
+            "external clauses must only mention observed variables");
+        ext_cl.push_back(inter);
+    }
 
     //////////
     // Clean it. Only *root* assignments may be used: a literal falsified on the
@@ -689,7 +698,13 @@ lbool Searcher::external_check_solution()
         apply_ext_forced_backtrack();
         return l_Undef;
     }
-    if (trail.size() != trail_before || decisionLevel() != level_before) {
+    if (trail.size() != trail_before
+        || decisionLevel() != level_before
+        //A variable observed while already fixed at the root moves nothing, but
+        //still owes the propagator a notification -- and it has just been handed
+        //a model that does not mention it. Go round again so that it does.
+        || !ext_pending_fixed.empty()
+    ) {
         //The assignment is not complete any more, whatever the answer was.
         verb_print(6, "[user-prop] the trail moved during cb_check_found_model()");
         return l_Undef;

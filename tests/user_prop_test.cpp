@@ -2187,6 +2187,112 @@ TEST_F(UserPropOtherApiTest, observing_a_fixed_variable_from_cb_decide)
               lp.stack[0].end()) << "the root assignment was notified at the wrong level";
 }
 
+// Observes one variable, once, from inside cb_check_found_model().
+class ModelTimeObservingPropagator : public MirrorPropagator
+{
+public:
+    Solver* raw = nullptr;
+    uint32_t var = 0;
+    bool done = false;
+    uint32_t num_models = 0;
+    bool seen_in_a_later_model = false;
+
+    bool cb_check_found_model(const vector<Lit>& model) override {
+        num_models++;
+        compare();
+        if (!done) {
+            done = true;
+            raw->add_observed_var(var);
+            return true;
+        }
+        if (std::find(model.begin(), model.end(), Lit(var, false)) != model.end()) {
+            seen_in_a_later_model = true;
+        }
+        return true;
+    }
+};
+
+TEST_F(UserPropOtherApiTest, observing_a_fixed_variable_from_cb_check_found_model)
+{
+    // Every variable is forced by a unit clause, so the assignment is complete
+    // at the root: observing one more moves neither the trail nor the decision
+    // level, and nothing but ext_pending_fixed says a notification is owed. Take
+    // the model as final here and the propagator is never told the value of the
+    // variable it just asked about.
+    ModelTimeObservingPropagator mp;
+    delete s;
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&mp);
+    s->new_vars(8);
+    for(uint32_t v = 0; v < 8; v++) {
+        vector<Lit> unit = {Lit(v, false)};
+        s->add_clause_outside(unit);
+    }
+    for(uint32_t v = 1; v < 8; v++) s->add_observed_var(v);
+    mp.raw = s;
+    mp.var = 0;
+    mp.start(s, 8);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_EQ(s->solve_with_assumptions(), l_True);
+    EXPECT_TRUE(mp.done);
+    EXPECT_GE(mp.num_models, 2U) << "the model was taken as final with a notification owed";
+    EXPECT_TRUE(mp.seen_in_a_later_model);
+    ASSERT_EQ(mp.stack.size(), 1U);
+    EXPECT_NE(std::find(mp.stack[0].begin(), mp.stack[0].end(), Lit(0, false)),
+              mp.stack[0].end()) << "the root assignment was never notified";
+}
+
+// Observes a variable in the middle of reading an external clause -- the one
+// callback that hands over literals one at a time, so the mapping from outer to
+// inter numbering can change while the clause is still being built.
+class ObservesWhileReadingPropagator : public MirrorPropagator
+{
+public:
+    Solver* raw = nullptr;
+    vector<Lit> clause;      // OUTER numbering
+    uint32_t observe_var = 0;
+    size_t next_lit = 0;
+    bool handed = false;
+    bool observed_mid_clause = false;
+
+    bool cb_has_external_clause(bool& is_forgettable) override {
+        is_forgettable = false;
+        return !handed && stack.size() > 2;
+    }
+    Lit cb_add_external_clause_lit() override {
+        if (next_lit == clause.size()) { next_lit = 0; handed = true; return lit_Undef; }
+        if (next_lit == 1 && !raw->is_observed_var(observe_var)) {
+            raw->add_observed_var(observe_var);
+            observed_mid_clause = true;
+        }
+        return clause[next_lit++];
+    }
+};
+
+TEST_F(UserPropOtherApiTest, observing_a_variable_while_reading_an_external_clause)
+{
+    ObservesWhileReadingPropagator op;
+    delete s;
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&op);
+    add_random_3sat(s, 40, 130, 23);
+    for(uint32_t v = 0; v < 39; v++) s->add_observed_var(v);
+    op.raw = s;
+    op.clause = str_to_cl("1, -2, 3");
+    op.observe_var = 39;
+    op.start(s, 40);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_EQ(s->solve_with_assumptions(), l_True);
+    EXPECT_TRUE(op.handed);
+    EXPECT_TRUE(op.observed_mid_clause);
+    EXPECT_TRUE(s->is_observed_var(39));
+    // the clause really did make it in
+    const vector<lbool>& m = s->get_model();
+    EXPECT_TRUE(m[0] == l_True || m[1] == l_False || m[2] == l_True);
+}
+
 // Observing or un-observing an assumption variable backtracks into the
 // assumption prefix. new_decision() indexes assumptions[] by decision level,
 // so deciding anything else there skips an assumption for good.
