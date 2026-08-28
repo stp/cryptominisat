@@ -122,6 +122,9 @@ namespace CMSat {
         // else is backtracked over first, so that no propagation the solver
         // cannot explain any more is left in the implication graph.
         void remove_observed_var(uint32_t var);
+        // Stop observing every variable. As with removing one assigned
+        // variable, this may backtrack during solving so that no external
+        // propagation survives after its reason provider has been forgotten.
         void reset_observed_vars();
         bool is_observed_var(uint32_t var) const;
 

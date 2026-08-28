@@ -175,6 +175,21 @@ void Solver::remove_observed_var(const uint32_t outer_var)
 
 void Solver::reset_observed_vars()
 {
+    //Removing the variables one at a time would backtrack below the earliest
+    //non-root observed assignment. Do that once, before clearing the flags:
+    //in particular, every lazy external propagation then leaves the implication
+    //graph while its reason can still be obtained from the propagator. Root
+    //external propagations are always explained eagerly, so none can retain an
+    //Ext placeholder across the reset.
+    uint32_t backtrack_to = decisionLevel();
+    for(const uint32_t outer_var: ext_observed_vars) {
+        const uint32_t inter_var = map_outer_to_inter(outer_var);
+        if (value(inter_var) != l_Undef && varData[inter_var].level > 0) {
+            backtrack_to = std::min(backtrack_to, varData[inter_var].level - 1);
+        }
+    }
+    if (backtrack_to < decisionLevel()) cancelUntil(backtrack_to);
+
     for(const uint32_t outer_var: ext_observed_vars) {
         varData[map_outer_to_inter(outer_var)].observed = 0;
     }
