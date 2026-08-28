@@ -221,6 +221,7 @@ public:
     template<bool inprocess> void enqueue(const Lit p);
     void enqueue_light(const Lit p);
     void new_decision_level();
+    void notify_assignments();
     vector<Lit>* get_xor_reason(const PropBy& reason, int32_t& ID);
 
     /////////////////////
@@ -401,6 +402,12 @@ private:
 inline void PropEngine::new_decision_level()
 {
     trail_lim.push_back(trail.size());
+    if (ext_prop_active()) {
+        //The propagator sees the trail as a stack, so it must know about
+        //everything below this point before the level is opened.
+        assert(ext_notified == trail.size());
+        ext_prop->notify_new_decision_level();
+    }
     #ifdef VERBOSE_DEBUG
     cout << "New decision level: " << trail_lim.size() << endl;
     #endif
@@ -558,6 +565,12 @@ void PropEngine::enqueue(const Lit p, const uint32_t level, const PropBy from, b
         }
     }
     #endif
+
+    //IPASIR-UP: an assignment below the current decision level cannot be
+    //expressed in the stack-like view the propagator is given. Chronological
+    //backtracking and Gauss-Jordan elimination, the two things that produce
+    //them, are switched off while a propagator is connected.
+    assert(!ext_prop_active() || level == decisionLevel());
 
     const bool sign = p.sign();
     assigns[v] = boolToLBool(!sign);

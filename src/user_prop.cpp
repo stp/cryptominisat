@@ -51,7 +51,16 @@ void Solver::connect_external_propagator(ExternalPropagator* p)
     release_assert(decisionLevel() == 0 &&
         "An external propagator can only be connected outside of solving");
 
+    release_assert(!fast_backw.fast_backw_on &&
+        "An external propagator cannot be combined with fast backward subsumption");
+
     ext_prop = p;
+    //A freshly connected propagator knows nothing, and observes nothing yet:
+    //whatever is on the level-0 trail concerns variables it has not asked
+    //about. Variables observed later that are already fixed go through
+    //ext_pending_fixed.
+    ext_notified = trail.size();
+    ext_pending_fixed.clear();
     verb_print(1, "[user-prop] external propagator connected");
 }
 
@@ -149,6 +158,31 @@ bool Solver::is_observed_var(const uint32_t outer_var) const
 {
     if (outer_var >= nVarsOuter()) return false;
     return varData[map_outer_to_inter(outer_var)].observed;
+}
+
+bool Solver::ext_get_observed_trail(vector<vector<Lit>>& out) const
+{
+    out.clear();
+    out.resize(decisionLevel() + 1);
+
+    //Level 0 is rebuilt from the assignments rather than from the trail:
+    //PropEngine::updateVars() keeps only the *length* of the trail across
+    //renumbering, and the order within the root prefix carries no meaning
+    //anyway. Sorted, so that both sides can agree on a canonical order.
+    for(const uint32_t outer_var: ext_observed_vars) {
+        const uint32_t v = map_outer_to_inter(outer_var);
+        if (value(v) == l_Undef || varData[v].level != 0) continue;
+        out[0].push_back(Lit(outer_var, value(v) == l_False));
+    }
+    std::sort(out[0].begin(), out[0].end());
+
+    for(const auto& t: trail) {
+        if (t.lev == 0 || t.lit == lit_Undef) continue;
+        if (!varData[t.lit.var()].observed) continue;
+        assert(t.lev < out.size());
+        out[t.lev].push_back(map_inter_to_outer(t.lit));
+    }
+    return ext_notified == trail.size() && ext_pending_fixed.empty();
 }
 
 bool Solver::ext_is_decision(const Lit outer_lit) const

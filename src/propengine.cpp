@@ -406,6 +406,45 @@ lbool PropEngine::bnn_prop(
     return l_Undef;
 }
 
+/**
+IPASIR-UP: hand over every observed assignment the external propagator has not
+been told about yet.
+
+Notification is lazy -- this is called just before any callback, which is all
+the interface promises. Literals are handed over one decision level at a time,
+because the propagator is allowed to assume that a single batch belongs to a
+single level.
+*/
+void PropEngine::notify_assignments()
+{
+    if (!ext_prop_active()) return;
+
+    //Variables that were already fixed when they became observed. Their trail
+    //position is behind the cursor, so they are kept separately.
+    if (!ext_pending_fixed.empty()) {
+        assert(decisionLevel() == 0);
+        ext_prop->notify_assignment(ext_pending_fixed);
+        ext_pending_fixed.clear();
+    }
+
+    while (ext_notified < trail.size()) {
+        const uint32_t lev = trail[ext_notified].lev;
+        ext_notify_lits.clear();
+        uint32_t i = ext_notified;
+        for(; i < trail.size() && trail[i].lev == lev; i++) {
+            const Lit lit = trail[i].lit;
+            //Solver::renumber_variables() wipes the literals of the level-0
+            //trail, keeping only its length. Everything up to that point has
+            //already been notified (see renumber_variables()).
+            if (lit == lit_Undef) continue;
+            if (!varData[lit.var()].observed) continue;
+            ext_notify_lits.push_back(map_inter_to_outer(lit));
+        }
+        ext_notified = i;
+        if (!ext_notify_lits.empty()) ext_prop->notify_assignment(ext_notify_lits);
+    }
+}
+
 vector<Lit>* PropEngine::get_bnn_reason(BNN* bnn, Lit lit)
 {
 //     cout << "Getting BNN reason, lit: " << lit << " bnn: " << *bnn << endl;

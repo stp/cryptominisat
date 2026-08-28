@@ -61,6 +61,74 @@ public:
     Lit cb_add_external_clause_lit() override { return lit_Undef; }
 };
 
+// Rebuilds the trail from notifications alone and compares it, at every point
+// where the two are required to agree, with what the solver actually has.
+// This is the whole of the notification contract in one object.
+class MirrorPropagator : public ExternalPropagator
+{
+public:
+    Solver* s = nullptr;
+    vector<vector<Lit>> stack;   // stack[i] holds the observed literals of level i
+    vector<char> assigned;       // indexed by outer var
+    uint32_t num_comparisons = 0;
+    uint32_t num_backtracks = 0;
+    uint32_t max_level_seen = 0;
+
+    void start(Solver* _s, uint32_t nvars) {
+        s = _s;
+        stack.assign(1, {});
+        assigned.assign(nvars, 0);
+    }
+
+    void notify_assignment(const vector<Lit>& lits) override {
+        EXPECT_FALSE(lits.empty());
+        for(const Lit l: lits) {
+            EXPECT_TRUE(s->is_observed_var(l.var()))
+                << "notified about unobserved var " << l.var()+1;
+            EXPECT_FALSE(assigned[l.var()])
+                << "var " << l.var()+1 << " assigned twice without a backtrack";
+            assigned[l.var()] = 1;
+            stack.back().push_back(l);
+        }
+    }
+
+    void notify_new_decision_level() override {
+        stack.push_back({});
+        max_level_seen = std::max<uint32_t>(max_level_seen, stack.size()-1);
+        compare();
+    }
+
+    void notify_backtrack(size_t new_level) override {
+        // must always pop at least one level
+        ASSERT_LT(new_level + 1, stack.size());
+        for(size_t i = new_level+1; i < stack.size(); i++) {
+            for(const Lit l: stack[i]) assigned[l.var()] = 0;
+        }
+        stack.resize(new_level + 1);
+        num_backtracks++;
+        compare();
+    }
+
+    bool cb_check_found_model(const vector<Lit>&) override { compare(); return true; }
+    bool cb_has_external_clause(bool& is_forgettable) override {
+        is_forgettable = false;
+        return false;
+    }
+    Lit cb_add_external_clause_lit() override { return lit_Undef; }
+
+    void compare() {
+        vector<vector<Lit>> expected;
+        // false: notifications are still owed, the two are allowed to differ
+        if (!s->ext_get_observed_trail(expected)) return;
+        num_comparisons++;
+
+        vector<vector<Lit>> mine = stack;
+        // the order within the root prefix carries no meaning
+        std::sort(mine[0].begin(), mine[0].end());
+        ASSERT_EQ(mine, expected);
+    }
+};
+
 }
 
 TEST(user_prop_connect, connect_and_disconnect)
@@ -272,17 +340,6 @@ TEST(user_prop_freeze, eliminated_var_is_uneliminated_when_observed)
     EXPECT_EQ(s.solve(), l_True);
 }
 
-namespace CMSat {
-
-struct UserPropFreezeTest : public ::testing::Test {
-    UserPropFreezeTest() { must_inter.store(false, std::memory_order_relaxed); }
-    ~UserPropFreezeTest() { delete s; }
-
-    SolverConf conf;
-    Solver* s = nullptr;
-    std::atomic<bool> must_inter;
-};
-
 // A random-ish 3-SAT instance, deterministic across runs.
 static void add_random_3sat(Solver* s, uint32_t nvars, uint32_t ncls, uint32_t seed)
 {
@@ -305,12 +362,24 @@ static void add_random_3sat(Solver* s, uint32_t nvars, uint32_t ncls, uint32_t s
     }
 }
 
+namespace CMSat {
+
+struct UserPropFreezeTest : public ::testing::Test {
+    UserPropFreezeTest() { must_inter.store(false, std::memory_order_relaxed); }
+    ~UserPropFreezeTest() { delete s; }
+
+    SolverConf conf;
+    Solver* s = nullptr;
+    std::atomic<bool> must_inter;
+};
+
 TEST_F(UserPropFreezeTest, no_chrono_backtracking_with_propagator)
 {
     NoopPropagator p;
     s = new Solver(&conf, &must_inter);
     s->connect_external_propagator(&p);
     add_random_3sat(s, 120, 520, 42);
+    must_inter.store(false, std::memory_order_relaxed);
     s->solve_with_assumptions();
     EXPECT_EQ(s->chrono_backtrack, 0U);
     EXPECT_GT(s->non_chrono_backtrack, 0U);
@@ -330,6 +399,110 @@ TEST_F(UserPropFreezeTest, no_gauss_jordan_matrices_with_propagator)
     }
     s->solve_with_assumptions();
     EXPECT_TRUE(s->gmatrices.empty());
+}
+
+}
+
+////////////////////////////
+// WP2: trail notifications
+////////////////////////////
+
+namespace CMSat {
+
+struct UserPropNotifyTest : public ::testing::Test {
+    UserPropNotifyTest() { must_inter.store(false, std::memory_order_relaxed); }
+    ~UserPropNotifyTest() { delete s; }
+
+    // Observe every third variable, mirror the trail, and check it at every
+    // point where the propagator and the solver must agree.
+    void run_mirror(uint32_t nvars, uint32_t ncls, uint32_t seed, uint32_t observe_every)
+    {
+        s = new Solver(&conf, &must_inter);
+        s->connect_external_propagator(&p);
+        add_random_3sat(s, nvars, ncls, seed);
+        for(uint32_t v = 0; v < nvars; v += observe_every) s->add_observed_var(v);
+        p.start(s, nvars);
+
+        // solve_with_assumptions() raises the interrupt flag on the way out
+        must_inter.store(false, std::memory_order_relaxed);
+        const lbool ret = s->solve_with_assumptions();
+        EXPECT_NE(ret, l_Undef);
+        EXPECT_GT(p.num_comparisons, 0U) << "the mirror never got to compare anything";
+        delete s;
+        s = nullptr;
+    }
+
+    SolverConf conf;
+    Solver* s = nullptr;
+    MirrorPropagator p;
+    std::atomic<bool> must_inter;
+};
+
+TEST_F(UserPropNotifyTest, mirror_small_sat)
+{
+    run_mirror(40, 130, 7, 3);
+    EXPECT_GT(p.max_level_seen, 0U);
+}
+
+TEST_F(UserPropNotifyTest, mirror_larger_with_inprocessing)
+{
+    // Big enough to trigger restarts, clause cleaning, simplification and
+    // renumbering -- all of which move the trail around behind the propagator.
+    run_mirror(200, 860, 11, 2);
+    EXPECT_GT(p.num_backtracks, 0U);
+}
+
+TEST_F(UserPropNotifyTest, mirror_unsat)
+{
+    run_mirror(30, 220, 23, 1);
+}
+
+TEST_F(UserPropNotifyTest, mirror_all_observed)
+{
+    run_mirror(120, 500, 5, 1);
+}
+
+TEST_F(UserPropNotifyTest, mirror_seeds)
+{
+    for(uint32_t seed = 1; seed <= 12; seed++) {
+        run_mirror(60, 240, seed, 2);
+    }
+}
+
+TEST_F(UserPropNotifyTest, mirror_survives_incremental_solving)
+{
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&p);
+    add_random_3sat(s, 60, 150, 3);
+    for(uint32_t v = 0; v < 60; v += 2) s->add_observed_var(v);
+    p.start(s, 60);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_EQ(s->solve_with_assumptions(), l_True);
+    const uint32_t after_first = p.num_comparisons;
+    EXPECT_GT(after_first, 0U);
+
+    // Solve again: the propagator keeps its level-0 view across the calls.
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_EQ(s->solve_with_assumptions(), l_True);
+    EXPECT_GT(p.num_comparisons, after_first);
+}
+
+TEST_F(UserPropNotifyTest, no_notifications_from_inprocessing)
+{
+    // Everything observed, heavy simplification: any assignment leaking out of
+    // probing or distillation would break the mirror.
+    s = new Solver(&conf, &must_inter);
+    s->conf.simplify_at_startup = true;
+    s->conf.full_simplify_at_startup = true;
+    s->connect_external_propagator(&p);
+    add_random_3sat(s, 150, 620, 31);
+    for(uint32_t v = 0; v < 150; v++) s->add_observed_var(v);
+    p.start(s, 150);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_NE(s->solve_with_assumptions(), l_Undef);
+    EXPECT_GT(p.num_comparisons, 0U);
 }
 
 }

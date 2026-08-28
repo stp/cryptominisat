@@ -905,6 +905,17 @@ bool Solver::renumber_variables(bool must_renumber)
 {
     assert(okay());
     assert(decisionLevel() == 0);
+
+    //IPASIR-UP: PropEngine::updateVars() keeps only the *length* of the trail,
+    //so anything not yet handed over would be lost. Renumbering runs as part of
+    //inprocessing, so lift the notification block for this one pass -- these
+    //are real, permanent level-0 assignments.
+    if (ext_prop != nullptr) {
+        const bool was_private = ext_prop_private_steps;
+        ext_prop_private_steps = false;
+        notify_assignments();
+        ext_prop_private_steps = was_private;
+    }
     SLOW_DEBUG_DO(for(const auto& x: xorclauses) for(const auto& v: x) assert(v < nVars()));
 
     if (nVars() == 0) return okay();
@@ -1942,6 +1953,10 @@ lbool Solver::simplify_problem(const bool startup, const string& strategy) {
     clear_order_heap();
     if (!clear_gauss_matrices(false)) return l_False;
 
+    //IPASIR-UP: inprocessing assigns and unassigns literals of its own, which
+    //are none of the propagator's business. Real (level 0) assignments made
+    //along the way are picked up by the next notification pass.
+    ExtPropPrivateSteps priv(this);
     if (ret == l_Undef) ret = execute_inprocess_strategy(startup, strategy);
     assert(ret != l_True);
 

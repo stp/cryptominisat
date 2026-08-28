@@ -224,6 +224,12 @@ class Solver : public Searcher
         void ext_force_backtrack(const uint32_t new_level);
         void ext_phase(const Lit outer_lit);
         void ext_unphase(const uint32_t outer_var);
+        /// The observed part of the trail, grouped by decision level, in OUTER
+        /// numbering: exactly what a correct external propagator must have
+        /// reconstructed from its notifications. Returns false when there are
+        /// notifications still owed, i.e. when the two are allowed to differ.
+        /// A debugging aid for propagator authors.
+        bool ext_get_observed_trail(vector<vector<Lit>>& out) const;
 
         bool fully_enqueue_these(const vector<Lit>& toEnqueue);
         bool fully_enqueue_this(const Lit lit_ID);

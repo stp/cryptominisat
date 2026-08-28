@@ -182,6 +182,10 @@ public:
     /// Their trail position is behind the notification cursor, so they are
     /// handed over separately, as part of the level-0 prefix.
     vector<Lit> ext_pending_fixed;
+    /// How much of the trail the propagator has already been told about.
+    /// Notification is lazy: this only has to catch up before a callback.
+    uint32_t ext_notified = 0;
+    vector<Lit> ext_notify_lits; ///< scratch buffer for one notification batch
     /// force_backtrack() is only honoured from inside cb_decide() and
     /// cb_check_found_model(); the request is recorded here and acted on once
     /// the callback has returned.
@@ -351,6 +355,27 @@ private:
     void enlarge_nonminimial_datastructs(size_t n = 1);
     void swapVars(const uint32_t which, const int off_by = 0);
     size_t num_bva_vars = 0;
+};
+
+/**
+IPASIR-UP: suppress notifications while the solver makes assignments of its own
+that are not part of the search -- probing, distillation, in-tree probing and
+the rest of inprocessing all push decision levels and enqueue literals that are
+undone again straight away. The external propagator must not see any of it.
+*/
+struct ExtPropPrivateSteps
+{
+    explicit ExtPropPrivateSteps(CNF* _cnf) :
+        cnf(_cnf), saved(_cnf->ext_prop_private_steps)
+    {
+        cnf->ext_prop_private_steps = true;
+    }
+    ~ExtPropPrivateSteps() { cnf->ext_prop_private_steps = saved; }
+    ExtPropPrivateSteps(const ExtPropPrivateSteps&) = delete;
+    ExtPropPrivateSteps& operator=(const ExtPropPrivateSteps&) = delete;
+
+    CNF* cnf;
+    bool saved;
 };
 
 template<class Function>

@@ -1285,6 +1285,9 @@ lbool Searcher::search()
                 }
             }
             reduce_db_if_needed();
+            //IPASIR-UP: the propagator's view of the trail must be current
+            //before it is asked anything.
+            notify_assignments();
             lbool dec_ret;
             if (fast_backw.fast_backw_on) dec_ret = new_decision_fast_backw();
             else dec_ret = new_decision<false>();
@@ -2515,20 +2518,29 @@ lbool Searcher::solve(const uint64_t _max_confls) {
 
     SLOW_DEBUG_DO(assert(fast_backw.fast_backw_on || solver->check_order_heap_sanity()));
     while(stats.conflicts < max_confl_per_search_solve_call && status == l_Undef) {
-        if (!conf.never_stop_search &&
-                (distill_clauses_if_needed() == l_False
-                || !full_probe_if_needed()
-                || !distill_bins_if_needed()
-                || !sub_str_with_bin_if_needed()
-                || !str_impl_with_impl_if_needed()
-                || !intree_if_needed())
-          ) {
+        {
+            //IPASIR-UP: none of the assignments below belong to the search
+            ExtPropPrivateSteps priv(this);
+            if (!conf.never_stop_search &&
+                    (distill_clauses_if_needed() == l_False
+                    || !full_probe_if_needed()
+                    || !distill_bins_if_needed()
+                    || !sub_str_with_bin_if_needed()
+                    || !str_impl_with_impl_if_needed()
+                    || !intree_if_needed())
+              ) {
+                status = l_False;
+            }
+        }
+        if (status == l_False) {
             assert(!frat->enabled() || unsat_cl_ID != 0);
-            status = l_False;
             goto end;
         }
         SLOW_DEBUG_DO(assert(solver->check_order_heap_sanity()));
-        sls_if_needed();
+        {
+            ExtPropPrivateSteps priv(this);
+            sls_if_needed();
+        }
 
         assert(watches.get_smudged_list().empty());
         params.clear();
@@ -3251,6 +3263,11 @@ void Searcher::cancelUntil(uint32_t blevel)
         trail.resize(j);
         qhead = trail_lim[blevel];
         trail_lim.resize(blevel);
+
+        //IPASIR-UP: everything above the target level is gone, so the
+        //propagator's stack must be popped down to it too.
+        if (ext_notified > trail.size()) ext_notified = trail.size();
+        if (!inprocess && ext_prop_active()) ext_prop->notify_backtrack(blevel);
     }
 
     #ifdef VERBOSE_DEBUG
@@ -3275,6 +3292,9 @@ void Searcher::cancelUntil_light()
         assigns[var] = l_Undef;
     }
     trail.resize(trail_lim[0]);
+    //Only ever used by probing, which runs as a private step, so there is
+    //nothing to notify -- but the cursor must not dangle past the trail.
+    if (ext_notified > trail.size()) ext_notified = trail.size();
     qhead = trail_lim[0];
     trail_lim.resize(0);
 }
