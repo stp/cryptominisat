@@ -226,6 +226,12 @@ public:
     /// IPASIR-UP: the reason clause of an external propagation of 'lit', asked
     /// for from the propagator the first time conflict analysis needs it. The
     /// propagated literal is always first.
+    ///
+    /// The pointer is into ext_reasons and stays valid only until the next call:
+    /// materialising a reason can grow that vector and move everything in it.
+    /// Every caller reads one reason to the end before asking for another --
+    /// keep it that way. get_bnn_reason() and get_xor_reason() have the same
+    /// shape and the same rule.
     vector<Lit>* get_ext_reason(const Lit lit);
 
     /////////////////////

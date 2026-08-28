@@ -62,6 +62,7 @@ class PropBy
         //2: binary
         //3: xor
         //4: bnn
+        //5: external (IPASIR-UP)
         uint32_t data2:bitsize_data2;
         int32_t ID;
 

@@ -979,6 +979,7 @@ bool Searcher::litRedundant(const Lit p, uint32_t abstract_levels)
                     Lit(p_analyze.var(), value(p_analyze.var()) == l_False));
                 lits = cl->data();
                 size = cl->size()-1;
+                ID = 0; //a BNN reason has no ID; chain is unused, see assert below
                 break;
             }
 

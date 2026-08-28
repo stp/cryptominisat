@@ -533,6 +533,11 @@ PropBy Searcher::external_propagate()
         ext_stats.prop_calls++;
         Lit elit = ext_prop->cb_propagate();
         while (elit != lit_Undef) {
+            //A propagator with an endless supply of literals must not make the
+            //solver deaf to interrupt_asap(). The literal just handed over is
+            //dropped, which costs nothing: cb_propagate() is asked again from
+            //scratch on the next call, and a propagation it still wants will be
+            //offered again then.
             if (must_interrupt_asap()) return confl;
             release_assert(elit.var() < nVarsOuter() &&
                 "external propagation of a variable that does not exist");
