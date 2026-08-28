@@ -71,6 +71,7 @@ public:
     Solver* s = nullptr;
     vector<vector<Lit>> stack;   // stack[i] holds the observed literals of level i
     vector<char> assigned;       // indexed by outer var
+    vector<lbool> value_of;      // indexed by outer var, from notifications alone
     uint32_t num_comparisons = 0;
     uint32_t num_backtracks = 0;
     uint32_t max_level_seen = 0;
@@ -79,6 +80,14 @@ public:
         s = _s;
         stack.assign(1, {});
         assigned.assign(nvars, 0);
+        value_of.assign(nvars, l_Undef);
+    }
+
+    /// The truth value of an outer literal, as the propagator sees it.
+    lbool val(const Lit l) const {
+        const lbool v = value_of[l.var()];
+        if (v == l_Undef) return l_Undef;
+        return l.sign() ? (v == l_True ? l_False : l_True) : v;
     }
 
     void notify_assignment(const vector<Lit>& lits) override {
@@ -89,6 +98,7 @@ public:
             EXPECT_FALSE(assigned[l.var()])
                 << "var " << l.var()+1 << " assigned twice without a backtrack";
             assigned[l.var()] = 1;
+            value_of[l.var()] = l.sign() ? l_False : l_True;
             stack.back().push_back(l);
         }
     }
@@ -103,7 +113,10 @@ public:
         // must always pop at least one level
         ASSERT_LT(new_level + 1, stack.size());
         for(size_t i = new_level+1; i < stack.size(); i++) {
-            for(const Lit l: stack[i]) assigned[l.var()] = 0;
+            for(const Lit l: stack[i]) {
+                assigned[l.var()] = 0;
+                value_of[l.var()] = l_Undef;
+            }
         }
         stack.resize(new_level + 1);
         num_backtracks++;
@@ -158,6 +171,51 @@ public:
             return lit_Undef;
         }
         return cl[next_lit++];
+    }
+};
+
+// Owns a set of clauses that the solver never sees, and acts as a complete
+// unit propagation engine over them: cb_propagate() hands back an implied
+// literal and cb_add_reason_clause_lit() explains it. Reasoning is done purely
+// over the trail the mirror has reconstructed from notifications.
+class UnitPropagator : public MirrorPropagator
+{
+public:
+    vector<vector<Lit>> theory;   // OUTER numbering
+    size_t reason_idx = 0;        // clause that implied the last cb_propagate()
+    size_t reason_lit = 0;
+    Lit last_propagated = lit_Undef;
+    size_t num_propagations = 0;
+
+    Lit cb_propagate() override {
+        for(size_t i = 0; i < theory.size(); i++) {
+            Lit implied = lit_Undef;
+            bool satisfied = false;
+            uint32_t num_free = 0;
+            for(const Lit l: theory[i]) {
+                const lbool v = val(l);
+                if (v == l_True) { satisfied = true; break; }
+                if (v == l_Undef) { num_free++; implied = l; }
+            }
+            if (satisfied) continue;
+            // Unit, or already falsified: in the latter case hand back any
+            // literal of it -- the solver will see the clause is conflicting.
+            if (num_free == 1 || num_free == 0) {
+                reason_idx = i;
+                reason_lit = 0;
+                last_propagated = (num_free == 1) ? implied : theory[i][0];
+                num_propagations++;
+                return last_propagated;
+            }
+        }
+        return lit_Undef;
+    }
+
+    Lit cb_add_reason_clause_lit(Lit propagated_lit) override {
+        EXPECT_EQ(propagated_lit, last_propagated);
+        const vector<Lit>& cl = theory[reason_idx];
+        if (reason_lit == cl.size()) { reason_lit = 0; return lit_Undef; }
+        return cl[reason_lit++];
     }
 };
 
@@ -782,6 +840,120 @@ TEST_F(UserPropClauseTest, propagator_forces_a_specific_model)
     for(uint32_t v = 0; v < 12; v++) {
         EXPECT_EQ(s->get_model()[v], v % 2 == 0 ? l_False : l_True) << "var " << v+1;
     }
+}
+
+}
+
+////////////////////////////
+// WP4: external propagation with eager reason clauses
+////////////////////////////
+
+namespace CMSat {
+
+struct UserPropPropagateTest : public ::testing::Test {
+    UserPropPropagateTest() { must_inter.store(false, std::memory_order_relaxed); }
+    ~UserPropPropagateTest() { delete s; delete ref; }
+
+    lbool solve_plain(const vector<vector<Lit>>& cls, uint32_t nvars) {
+        delete ref;
+        ref = new Solver(&conf, &must_inter);
+        ref->new_vars(nvars);
+        for(const auto& cl: cls) {
+            vector<Lit> tmp = cl;
+            ref->add_clause_outside(tmp);
+        }
+        must_inter.store(false, std::memory_order_relaxed);
+        return ref->solve_with_assumptions();
+    }
+
+    // The first 'split' clauses go to the solver; the rest exist only inside
+    // the propagator, which propagates over them and explains itself.
+    lbool solve_with_theory(const vector<vector<Lit>>& cls, uint32_t nvars, size_t split) {
+        delete s;
+        s = new Solver(&conf, &must_inter);
+        s->connect_external_propagator(&p);
+        s->new_vars(nvars);
+        for(size_t i = 0; i < split; i++) {
+            vector<Lit> tmp = cls[i];
+            s->add_clause_outside(tmp);
+        }
+        for(uint32_t v = 0; v < nvars; v++) s->add_observed_var(v);
+        p.theory.clear();
+        for(size_t i = split; i < cls.size(); i++) p.theory.push_back(cls[i]);
+        p.start(s, nvars);
+
+        must_inter.store(false, std::memory_order_relaxed);
+        return s->solve_with_assumptions();
+    }
+
+    SolverConf conf;
+    Solver* s = nullptr;
+    Solver* ref = nullptr;
+    UnitPropagator p;
+    std::atomic<bool> must_inter;
+};
+
+TEST_F(UserPropPropagateTest, theory_propagation_matches_plain_solving_sat)
+{
+    const uint32_t nvars = 60;
+    auto cls = gen_3sat(nvars, 200, 17);
+    ASSERT_EQ(solve_plain(cls, nvars), l_True);
+    ASSERT_EQ(solve_with_theory(cls, nvars, 140), l_True);
+    EXPECT_GT(p.num_propagations, 0U);
+    EXPECT_TRUE(model_satisfies(s->get_model(), cls));
+}
+
+TEST_F(UserPropPropagateTest, theory_propagation_matches_plain_solving_unsat)
+{
+    const uint32_t nvars = 24;
+    auto cls = gen_3sat(nvars, 180, 5);
+    ASSERT_EQ(solve_plain(cls, nvars), l_False);
+    ASSERT_EQ(solve_with_theory(cls, nvars, 90), l_False);
+    EXPECT_GT(p.num_propagations, 0U);
+}
+
+TEST_F(UserPropPropagateTest, whole_problem_in_the_propagator)
+{
+    // The solver gets no clauses at all: every implication and every conflict
+    // comes out of the propagator, through reason clauses only.
+    const uint32_t nvars = 25;
+    auto cls = gen_3sat(nvars, 100, 9);
+    const lbool expected = solve_plain(cls, nvars);
+    ASSERT_EQ(solve_with_theory(cls, nvars, 0), expected);
+    if (expected == l_True) EXPECT_TRUE(model_satisfies(s->get_model(), cls));
+}
+
+TEST_F(UserPropPropagateTest, many_seeds)
+{
+    for(uint32_t seed = 1; seed <= 15; seed++) {
+        const uint32_t nvars = 30;
+        auto cls = gen_3sat(nvars, 125, seed);
+        const lbool expected = solve_plain(cls, nvars);
+        ASSERT_EQ(solve_with_theory(cls, nvars, cls.size()/2), expected)
+            << "seed " << seed;
+        if (expected == l_True) {
+            EXPECT_TRUE(model_satisfies(s->get_model(), cls)) << "seed " << seed;
+        }
+        p = UnitPropagator();
+    }
+}
+
+TEST_F(UserPropPropagateTest, forgettable_reason_clauses)
+{
+    const uint32_t nvars = 60;
+    auto cls = gen_3sat(nvars, 200, 17);
+    p.are_reasons_forgettable = true;
+    ASSERT_EQ(solve_with_theory(cls, nvars, 140), l_True);
+    EXPECT_TRUE(model_satisfies(s->get_model(), cls));
+}
+
+TEST_F(UserPropPropagateTest, lazy_propagator_is_never_asked)
+{
+    const uint32_t nvars = 40;
+    auto cls = gen_3sat(nvars, 120, 3);
+    p.is_lazy = true;
+    solve_with_theory(cls, nvars, cls.size());   // nothing left for the theory
+    EXPECT_EQ(p.num_propagations, 0U);
 }
 
 }

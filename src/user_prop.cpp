@@ -427,9 +427,16 @@ PropBy Searcher::add_external_clause(const bool forgettable_in, const Lit reason
 }
 
 /**
-Algorithm 3 of the paper: keep taking clauses from the external propagator for
-as long as it has any, propagating after each one so that it always sees an
-up-to-date trail.
+Algorithms 2 and 3 of the paper, run whenever unit propagation has reached a
+fixed point: first ask the propagator for literals it can imply, then for
+clauses it wants to add. Either may change the trail, so each round ends with
+propagation and a fresh notification, and adding a clause earns the propagator
+another turn.
+
+Propagated literals are explained eagerly: the reason clause is asked for
+straight away and added like any other external clause, which is exactly what
+makes the literal end up on the trail (or produces the conflict). Conflict
+analysis therefore needs to know nothing about external propagation.
 */
 PropBy Searcher::external_propagate()
 {
@@ -438,20 +445,65 @@ PropBy Searcher::external_propagate()
     if (ext_prop->is_lazy || ext_prop_private_steps) return PropBy();
 
     PropBy confl;
-    notify_assignments();
+    bool another_round = true;
+    while (another_round && confl.isnullptr() && okay()) {
+        another_round = false;
 
-    bool forgettable = false;
-    while (ext_prop->cb_has_external_clause(forgettable)) {
-        confl = add_external_clause(forgettable);
-        forgettable = false;
-        if (!okay()) return PropBy();
-        if (!confl.isnullptr()) break;
-
-        if (qhead != trail.size()) {
-            confl = propagate<false>();
-            if (!confl.isnullptr()) break;
-        }
+        //////////
+        // Algorithm 2: literals implied by the propagator
+        //////////
         notify_assignments();
+        Lit elit = ext_prop->cb_propagate();
+        while (elit != lit_Undef) {
+            release_assert(elit.var() < nVarsOuter() &&
+                "external propagation of a variable that does not exist");
+            const Lit ilit = map_outer_to_inter(elit);
+            release_assert(varData[ilit.var()].observed &&
+                "external propagation is only allowed over observed variables");
+
+            //An already satisfied literal is simply ignored. Otherwise the
+            //reason clause both explains and performs the propagation: it
+            //propagates a free literal and conflicts on a falsified one.
+            if (value(ilit) != l_True) {
+                VERBOSE_PRINT("[user-prop] external propagation of " << ilit
+                    << " (value " << value(ilit) << ")");
+                confl = add_external_clause(ext_prop->are_reasons_forgettable, elit);
+                if (!okay()) return PropBy();
+                if (!confl.isnullptr()) break;
+
+                release_assert(value(ilit) != l_Undef &&
+                    "the reason clause of an external propagation must imply it"
+                    " under the current trail");
+
+                if (qhead != trail.size()) {
+                    confl = propagate<false>();
+                    if (!confl.isnullptr()) break;
+                }
+                notify_assignments();
+            }
+            elit = ext_prop->cb_propagate();
+        }
+        if (!confl.isnullptr() || !okay()) break;
+
+        //////////
+        // Algorithm 3: clauses the propagator wants to add
+        //////////
+        notify_assignments();
+        bool forgettable = false;
+        while (ext_prop->cb_has_external_clause(forgettable)) {
+            confl = add_external_clause(forgettable);
+            forgettable = false;
+            if (!okay()) return PropBy();
+            if (!confl.isnullptr()) break;
+
+            if (qhead != trail.size()) {
+                confl = propagate<false>();
+                if (!confl.isnullptr()) break;
+            }
+            notify_assignments();
+            //The trail moved, so the propagator may have more to say now.
+            another_round = true;
+        }
     }
     return confl;
 }
