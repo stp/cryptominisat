@@ -506,7 +506,23 @@ vector<Lit>* PropEngine::get_ext_reason(const Lit lit)
         l = ext_prop->cb_add_reason_clause_lit(elit);
     }
 
-    //Conflict analysis reads the propagated literal off the front.
+    //Conflict analysis assumes an ordinary clause: in particular, the pivot
+    //occurs exactly once. Canonicalize benign duplicates before handing the
+    //reason over, and reject a complementary pair -- a tautology cannot explain
+    //a propagation. Lit's ordering keeps both signs of a variable adjacent.
+    std::sort(ret->begin(), ret->end());
+    Lit prev = lit_Undef;
+    size_t unique = 0;
+    for(const Lit q: *ret) {
+        if (q == prev) continue;
+        release_assert(q != ~prev &&
+            "the reason clause of an external propagation cannot be tautological");
+        (*ret)[unique++] = q;
+        prev = q;
+    }
+    ret->resize(unique);
+
+    //Conflict analysis reads the single propagated literal off the front.
     bool found = false;
     for(size_t i = 0; i < ret->size(); i++) {
         if ((*ret)[i] == lit) { std::swap((*ret)[0], (*ret)[i]); found = true; break; }
@@ -527,10 +543,9 @@ vector<Lit>* PropEngine::get_ext_reason(const Lit lit)
     //checks the same thing at the end of learn_external_reason_clause().
     for(size_t i = 1; i < ret->size(); i++) {
         const Lit other = (*ret)[i];
-        if (other == lit) continue; //a duplicate of the literal being explained
         release_assert(value(other) == l_False &&
             "a literal of an external reason clause is not falsified");
-        release_assert(varData[other.var()].sublevel <= varData[lit.var()].sublevel &&
+        release_assert(varData[other.var()].sublevel < varData[lit.var()].sublevel &&
             "an external reason clause names a literal assigned after the one it explains");
     }
 

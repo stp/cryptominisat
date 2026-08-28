@@ -1928,6 +1928,90 @@ TEST_F(UserPropLazyTest, resetting_observation_retires_live_lazy_reasons)
     for(uint32_t v = 0; v < 4; v++) EXPECT_FALSE(s->is_observed_var(v));
 }
 
+// Lazily propagates x -> y and x -> z, but repeats the propagated literal in
+// each reason. Repetition does not change the clause logically, yet leaving the
+// second pivot in the vector makes conflict analysis resolve on it twice and
+// violates the first-UIP invariant.
+class DuplicatePivotReasonPropagator : public ExternalPropagator
+{
+public:
+    vector<vector<Lit>> stack = vector<vector<Lit>>(1);
+    size_t next_reason_lit = 0;
+    uint32_t explanations = 0;
+    bool x_is_true = false;
+    bool propagated_y = false;
+    bool propagated_z = false;
+
+    void notify_assignment(const vector<Lit>& lits) override {
+        for(const Lit l: lits) {
+            stack.back().push_back(l);
+            if (l.var() == 0) x_is_true = !l.sign();
+        }
+    }
+    void notify_new_decision_level() override { stack.push_back({}); }
+    void notify_backtrack(size_t new_level) override {
+        for(size_t level = new_level + 1; level < stack.size(); level++) {
+            for(const Lit l: stack[level]) {
+                if (l.var() == 0) x_is_true = false;
+            }
+        }
+        stack.resize(new_level + 1);
+    }
+    bool cb_check_found_model(const vector<Lit>&) override { return true; }
+    bool cb_has_external_clause(bool& is_forgettable) override {
+        is_forgettable = false;
+        return false;
+    }
+    Lit cb_add_external_clause_lit() override { return lit_Undef; }
+
+    Lit cb_decide() override {
+        if (!propagated_y) return Lit(0, false);
+        return lit_Undef;
+    }
+    Lit cb_propagate() override {
+        if (!x_is_true) return lit_Undef;
+        if (!propagated_y) {
+            propagated_y = true;
+            return Lit(1, false);
+        }
+        if (!propagated_z) {
+            propagated_z = true;
+            return Lit(2, false);
+        }
+        return lit_Undef;
+    }
+    Lit cb_add_reason_clause_lit(Lit propagated_lit) override {
+        if (next_reason_lit == 0) explanations++;
+        if (next_reason_lit < 2) {
+            next_reason_lit++;
+            return propagated_lit;
+        }
+        if (next_reason_lit++ == 2) return Lit(0, true);
+        next_reason_lit = 0;
+        return lit_Undef;
+    }
+};
+
+TEST_F(UserPropLazyTest, duplicate_pivot_is_removed_from_lazy_reason)
+{
+    conf.ext_lazy_reasons = true;
+    DuplicatePivotReasonPropagator dp;
+    delete s;
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&dp);
+    s->new_vars(4); // x, y, z, a
+    s->add_clause_outside(str_to_cl("-2, -3, 4"));
+    s->add_clause_outside(str_to_cl("-2, -3, -4"));
+    for(uint32_t v = 0; v < 4; v++) s->add_observed_var(v);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_EQ(s->solve_with_assumptions(), l_True);
+    EXPECT_TRUE(dp.propagated_y);
+    EXPECT_TRUE(dp.propagated_z);
+    EXPECT_GT(dp.explanations, 0U);
+    EXPECT_EQ(s->get_model()[0], l_False);
+}
+
 TEST_F(UserPropLazyTest, lazy_is_ignored_under_frat)
 {
     // Reason clauses have to be in the proof, so they are asked for eagerly.
