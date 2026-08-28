@@ -1562,6 +1562,11 @@ DLL_PUBLIC void SATSolver::clean_sampl_get_empties(
 DLL_PUBLIC lbool SATSolver::find_fast_backw(FastBackwData fast_backw)
 {
     assert(data->solvers.size() == 1);
+    if (data->solvers[0]->ext_prop != nullptr) {
+        const char err[] = "ERROR: find_fast_backw() cannot be used with an external propagator";
+        std::cerr << err << endl;
+        throw std::runtime_error(err);
+    }
     data->solvers[0]->fast_backw = fast_backw;
     bool backup_doVarElim = data->solvers[0]->conf.doVarElim;
     data->solvers[0]->conf.doVarElim = true;

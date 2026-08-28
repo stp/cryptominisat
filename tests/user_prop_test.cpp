@@ -1491,6 +1491,51 @@ TEST_F(UserPropLazyTest, lazy_is_ignored_under_frat)
     std::remove(fname);
 }
 
+TEST_F(UserPropLazyTest, lazy_reason_in_a_failed_assumption_core)
+{
+    // Assume 1 and -2 while the propagator knows 1 -> 2. The propagator
+    // propagates 2 lazily on the assumption level, so the second assumption is
+    // contradicted by a literal whose reason has not been asked for yet, and
+    // analyze_final_confl_with_assumptions() has to materialise it.
+    conf.ext_lazy_reasons = true;
+    delete s;
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&p);
+    s->new_vars(6);
+    s->add_clause_outside(str_to_cl("3, 4"));
+    for(uint32_t v = 0; v < 6; v++) s->add_observed_var(v);
+    p.theory.push_back(str_to_cl("-1, 2"));
+    p.start_theory(s, 6);
+
+    vector<Lit> assumps = {Lit(0, false), Lit(1, true)};
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_EQ(s->solve_with_assumptions(&assumps), l_False);
+    EXPECT_GT(p.num_propagations, 0U);
+    EXPECT_FALSE(s->conflict.empty());
+    // the solver is still usable without those assumptions
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_EQ(s->solve_with_assumptions(), l_True);
+}
+
+TEST_F(UserPropLazyTest, lazy_with_non_recursive_clause_minimisation)
+{
+    // The other minimisation path: normalClMinim() rather than
+    // recursiveConfClauseMin(). It reads reasons too.
+    conf.doRecursiveMinim = false;
+    for(uint32_t seed = 1; seed <= 8; seed++) {
+        const uint32_t nvars = 30;
+        auto cls = gen_3sat(nvars, 125, seed);
+        const lbool expected = solve_plain(cls, nvars);
+        p = UnitPropagator();
+        conf.doRecursiveMinim = false;
+        ASSERT_EQ(solve_with_theory(cls, nvars, cls.size()/2, true), expected)
+            << "seed " << seed;
+        if (expected == l_True) {
+            EXPECT_TRUE(model_satisfies(s->get_model(), cls)) << "seed " << seed;
+        }
+    }
+}
+
 TEST_F(UserPropLazyTest, lazy_with_the_whole_problem_in_the_propagator)
 {
     for(uint32_t seed = 1; seed <= 8; seed++) {
@@ -1637,6 +1682,9 @@ TEST_F(UserPropAdversaryTest, everything_at_once_under_frat)
 TEST_F(UserPropAdversaryTest, everything_at_once_with_assumptions)
 {
     for(uint32_t seed = 300; seed <= 308; seed++) {
+        // alternate eager and lazy: the failed-assumption path reads reasons
+        // too, and with ext_t those have to be materialised there as well
+        conf.ext_lazy_reasons = (seed % 2 == 0);
         const uint32_t nvars = 26;
         auto cls = gen_3sat(nvars, 100, seed);
 
@@ -1666,6 +1714,72 @@ TEST_F(UserPropAdversaryTest, everything_at_once_with_assumptions)
         must_inter.store(false, std::memory_order_relaxed);
         ASSERT_EQ(s->solve_with_assumptions(&assumps), expected) << "seed " << seed;
     }
+}
+
+}
+
+////////////////////////////
+// Public API calls that touch the trail outside the search
+////////////////////////////
+
+namespace CMSat {
+
+struct UserPropOtherApiTest : public ::testing::Test {
+    UserPropOtherApiTest() { must_inter.store(false, std::memory_order_relaxed); }
+    ~UserPropOtherApiTest() { delete s; }
+
+    void setup(uint32_t nvars, uint32_t ncls, uint32_t seed) {
+        s = new Solver(&conf, &must_inter);
+        s->connect_external_propagator(&p);
+        add_random_3sat(s, nvars, ncls, seed);
+        for(uint32_t v = 0; v < nvars; v++) s->add_observed_var(v);
+        p.start(s, nvars);
+        must_inter.store(false, std::memory_order_relaxed);
+        ASSERT_EQ(s->solve_with_assumptions(), l_True);
+        // back at the root: the propagator's stack must be level 0 only
+        ASSERT_EQ(p.stack.size(), 1U);
+    }
+
+    SolverConf conf;
+    Solver* s = nullptr;
+    MirrorPropagator p;
+    std::atomic<bool> must_inter;
+};
+
+// implied_by(), minimize_clause() and probe() all open a decision level of
+// their own, outside the search. None of that is the propagator's business.
+
+TEST_F(UserPropOtherApiTest, implied_by_does_not_reach_the_propagator)
+{
+    setup(40, 100, 7);
+    vector<Lit> out;
+    s->implied_by(str_to_cl("1, 2"), out);
+    EXPECT_EQ(p.stack.size(), 1U) << "phantom decision level leaked from implied_by()";
+
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_EQ(s->solve_with_assumptions(), l_True);
+}
+
+TEST_F(UserPropOtherApiTest, minimize_clause_does_not_reach_the_propagator)
+{
+    setup(40, 100, 11);
+    vector<Lit> cl = str_to_cl("1, 2, 3");
+    s->minimize_clause(cl);
+    EXPECT_EQ(p.stack.size(), 1U) << "phantom decision level leaked from minimize_clause()";
+
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_EQ(s->solve_with_assumptions(), l_True);
+}
+
+TEST_F(UserPropOtherApiTest, probe_does_not_reach_the_propagator)
+{
+    setup(40, 100, 13);
+    uint32_t min_props = 0;
+    for(uint32_t v = 0; v < 10; v++) s->probe_outside(Lit(v, false), min_props);
+    EXPECT_EQ(p.stack.size(), 1U) << "phantom decision level leaked from probe()";
+
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_EQ(s->solve_with_assumptions(), l_True);
 }
 
 }

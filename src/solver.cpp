@@ -3271,6 +3271,8 @@ bool Solver::implied_by(const std::vector<Lit>& lits,
     implied_by_tmp_lits = lits;
     if (!add_clause_helper(implied_by_tmp_lits)) return false;
 
+    //IPASIR-UP: the decision level opened below is ours, not the search's
+    ExtPropPrivateSteps priv(this);
     assert(decisionLevel() == 0);
     for(Lit p: implied_by_tmp_lits) {
         if (value(p) == l_Undef) {
@@ -3573,6 +3575,8 @@ bool Solver::minimize_clause(vector<Lit>& cl) {
     assert(get_num_bva_vars() == 0);
 
     add_clause_helper(cl);
+    //IPASIR-UP: the decision level opened below is ours, not the search's
+    ExtPropPrivateSteps priv(this);
     new_decision_level();
     uint32_t i = 0;
     uint32_t j = 0;
