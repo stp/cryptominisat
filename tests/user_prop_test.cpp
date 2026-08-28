@@ -2650,6 +2650,64 @@ public:
     }
 };
 
+// Observes an eliminated variable from the model callback, i.e. in the middle
+// of the search and above the root.
+class ObservesEliminatedAtModelPropagator : public NoopPropagator
+{
+public:
+    SATSolver* raw = nullptr;
+    uint32_t var = 2;
+    bool observed_it = false;
+    bool saw_it_in_a_model = false;
+
+    bool cb_check_found_model(const vector<Lit>& model) override {
+        NoopPropagator::cb_check_found_model(model);
+        if (!observed_it) {
+            EXPECT_TRUE(raw->removed_var(var));
+            raw->add_observed_var(var);
+            observed_it = true;
+            EXPECT_FALSE(raw->removed_var(var));
+            return false; // the trail moved anyway
+        }
+        for(const Lit l: model) if (l.var() == var) saw_it_in_a_model = true;
+        return true;
+    }
+};
+
+TEST_F(UserPropOtherApiTest, eliminated_var_is_uneliminated_when_observed_during_solving)
+{
+    // Var 3 only occurs in two clauses that resolve it away. Renumbering is
+    // off so that it stays inside the range the search works on: this is the
+    // path that has to backtrack and un-eliminate by itself, rather than get
+    // both from re-adding a variable that was renumbered out.
+    SATSolver api;
+    ObservesEliminatedAtModelPropagator ep;
+    ep.raw = &api;
+    api.set_renumber(false);
+    const uint32_t nvars = 30;
+    api.new_vars(nvars);
+    vector<vector<Lit>> cls = {str_to_cl("1, 3"), str_to_cl("2, -3")};
+    for(const auto& cl: gen_3sat(nvars, 110, 21)) {
+        bool touches = false;
+        for(const Lit l: cl) if (l.var() == 2) touches = true;
+        if (!touches) cls.push_back(cl);
+    }
+    for(const auto& cl: cls) api.add_clause(cl);
+    std::string strategy = "occ-bve";
+    ASSERT_EQ(api.simplify(nullptr, &strategy), l_Undef);
+    ASSERT_TRUE(api.removed_var(2));
+
+    api.connect_external_propagator(&ep);
+    for(uint32_t v = 0; v < nvars; v++) if (v != 2) api.add_observed_var(v);
+
+    ASSERT_EQ(api.solve(), l_True);
+    EXPECT_TRUE(ep.observed_it);
+    EXPECT_TRUE(ep.saw_it_in_a_model);
+    EXPECT_TRUE(api.is_observed_var(2));
+    EXPECT_FALSE(api.removed_var(2));
+    EXPECT_TRUE(model_satisfies(api.get_model(), cls));
+}
+
 TEST_F(UserPropOtherApiTest, remove_observed_var_during_solving)
 {
     UnobservingPropagator up;

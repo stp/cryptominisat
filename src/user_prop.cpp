@@ -109,12 +109,15 @@ void Solver::add_observed_var(const uint32_t outer_var)
     release_assert(inter_var < nVars());
 
     //The variable must exist in the search for the propagator to be able to
-    //see it. Simplification may have removed it during an earlier solve().
+    //see it. Simplification may have eliminated it during an earlier solve():
+    //put its clauses back. That can only be done at the root, so from inside
+    //a callback it costs the search above it -- the same price as observing a
+    //variable that is already assigned, and the same as a variable that
+    //renumbering moved out of the search pays above.
     if (varData[inter_var].removed == Removed::elimed) {
-        release_assert(decisionLevel() == 0 &&
-            "Cannot un-eliminate a variable during solving -- observe it before solve()");
         release_assert(okay());
         release_assert(occsimplifier != nullptr);
+        cancelUntil(0);
         occsimplifier->uneliminate(inter_var);
     }
     if (varData[inter_var].removed == Removed::replaced) {
