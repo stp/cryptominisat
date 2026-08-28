@@ -186,6 +186,8 @@ public:
     /// Notification is lazy: this only has to catch up before a callback.
     uint32_t ext_notified = 0;
     vector<Lit> ext_notify_lits; ///< scratch buffer for one notification batch
+    vector<Lit> ext_cl;          ///< scratch: an external clause, INTER numbering
+    vector<Lit> ext_cl_outer;    ///< scratch: the same clause as the user gave it
     /// force_backtrack() is only honoured from inside cb_decide() and
     /// cb_check_found_model(); the request is recorded here and acted on once
     /// the callback has returned.

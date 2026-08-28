@@ -124,6 +124,21 @@ class Searcher : public HyperEngine
             }
         }
 
+        ///////////////////
+        // IPASIR-UP (see user_prop.cpp)
+        ///////////////////
+        /// Read one clause from the external propagator and add it to the
+        /// solver at the current decision level. 'reason_for' is lit_Undef for
+        /// a plain external clause, or the OUTER literal whose reason clause is
+        /// being asked for. Returns a conflicting PropBy, or a null one if
+        /// there is no conflict; sets ok=false if the clause is empty.
+        PropBy add_external_clause(bool forgettable, Lit reason_for = lit_Undef);
+        /// One round of interaction with the external propagator, run whenever
+        /// unit propagation has reached a fixed point. Returns a conflicting
+        /// PropBy, or a null one.
+        PropBy external_propagate();
+        PropBy ext_attach_clause(const int32_t ID, const bool red);
+
         //ChronoBT
         template<bool do_insert_var_order = true, bool inprocess = false>
         void cancelUntil(uint32_t level); ///<Backtrack until a certain level.

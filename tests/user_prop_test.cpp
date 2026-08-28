@@ -22,6 +22,7 @@ THE SOFTWARE.
 
 #include "gtest/gtest.h"
 
+#include <cstdio>
 #include <vector>
 
 #include "cryptominisat5/cryptominisat.h"
@@ -126,6 +127,37 @@ public:
         // the order within the root prefix carries no meaning
         std::sort(mine[0].begin(), mine[0].end());
         ASSERT_EQ(mine, expected);
+    }
+};
+
+// Holds a set of clauses and hands them to the solver during the search, one
+// at a time, instead of adding them up front. The answer must not change.
+// Inherits the mirror's checks, so the notification contract is still tested
+// while clauses are being woven into the trail.
+class OraclePropagator : public MirrorPropagator
+{
+public:
+    vector<vector<Lit>> to_hand_over;   // OUTER numbering
+    bool forgettable = false;
+    size_t next_clause = 0;
+    size_t next_lit = 0;
+    size_t num_handed_over = 0;
+
+    bool cb_has_external_clause(bool& is_forgettable) override {
+        is_forgettable = forgettable;
+        return next_clause < to_hand_over.size();
+    }
+
+    Lit cb_add_external_clause_lit() override {
+        assert(next_clause < to_hand_over.size());
+        const vector<Lit>& cl = to_hand_over[next_clause];
+        if (next_lit == cl.size()) {
+            next_lit = 0;
+            next_clause++;
+            num_handed_over++;
+            return lit_Undef;
+        }
+        return cl[next_lit++];
     }
 };
 
@@ -503,6 +535,253 @@ TEST_F(UserPropNotifyTest, no_notifications_from_inprocessing)
     must_inter.store(false, std::memory_order_relaxed);
     EXPECT_NE(s->solve_with_assumptions(), l_Undef);
     EXPECT_GT(p.num_comparisons, 0U);
+}
+
+}
+
+////////////////////////////
+// WP3: external clause addition during the search
+////////////////////////////
+
+namespace CMSat {
+
+// Deterministic random 3-SAT as a plain list of clauses in OUTER numbering.
+static vector<vector<Lit>> gen_3sat(uint32_t nvars, uint32_t ncls, uint32_t seed)
+{
+    uint64_t st = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+    auto next = [&st]() {
+        st = st * 6364136223846793005ULL + 1442695040888963407ULL;
+        return (uint32_t)(st >> 33);
+    };
+    vector<vector<Lit>> out;
+    for(uint32_t i = 0; i < ncls; i++) {
+        vector<Lit> cl;
+        while(cl.size() < 3) {
+            const uint32_t v = next() % nvars;
+            bool dup = false;
+            for(const Lit l: cl) if (l.var() == v) dup = true;
+            if (!dup) cl.push_back(Lit(v, next() & 1));
+        }
+        out.push_back(cl);
+    }
+    return out;
+}
+
+static bool model_satisfies(const vector<lbool>& model, const vector<vector<Lit>>& cls)
+{
+    for(const auto& cl: cls) {
+        bool sat = false;
+        for(const Lit l: cl) {
+            if (l.var() >= model.size()) return false;
+            if (model[l.var()] == (l.sign() ? l_False : l_True)) { sat = true; break; }
+        }
+        if (!sat) return false;
+    }
+    return true;
+}
+
+struct UserPropClauseTest : public ::testing::Test {
+    UserPropClauseTest() { must_inter.store(false, std::memory_order_relaxed); }
+    ~UserPropClauseTest() { delete s; delete ref; }
+
+    lbool solve_plain(const vector<vector<Lit>>& cls, uint32_t nvars) {
+        ref = new Solver(&conf, &must_inter);
+        ref->new_vars(nvars);
+        for(const auto& cl: cls) {
+            vector<Lit> tmp = cl;
+            ref->add_clause_outside(tmp);
+        }
+        must_inter.store(false, std::memory_order_relaxed);
+        return ref->solve_with_assumptions();
+    }
+
+    // 'split' clauses go in up front, the rest arrive through the propagator.
+    lbool solve_split(const vector<vector<Lit>>& cls, uint32_t nvars, size_t split) {
+        s = new Solver(&conf, &must_inter);
+        s->connect_external_propagator(&p);
+        s->new_vars(nvars);
+        for(size_t i = 0; i < split; i++) {
+            vector<Lit> tmp = cls[i];
+            s->add_clause_outside(tmp);
+        }
+        for(uint32_t v = 0; v < nvars; v++) s->add_observed_var(v);
+        for(size_t i = split; i < cls.size(); i++) p.to_hand_over.push_back(cls[i]);
+        p.start(s, nvars);
+
+        must_inter.store(false, std::memory_order_relaxed);
+        return s->solve_with_assumptions();
+    }
+
+    SolverConf conf;
+    Solver* s = nullptr;
+    Solver* ref = nullptr;
+    OraclePropagator p;
+    std::atomic<bool> must_inter;
+};
+
+TEST_F(UserPropClauseTest, same_answer_as_adding_up_front_sat)
+{
+    const uint32_t nvars = 60;
+    auto cls = gen_3sat(nvars, 200, 17);
+    const lbool expected = solve_plain(cls, nvars);
+    ASSERT_EQ(expected, l_True);
+
+    ASSERT_EQ(solve_split(cls, nvars, 140), l_True);
+    EXPECT_EQ(p.num_handed_over, cls.size() - 140);
+    EXPECT_TRUE(model_satisfies(s->get_model(), cls));
+}
+
+TEST_F(UserPropClauseTest, same_answer_as_adding_up_front_unsat)
+{
+    const uint32_t nvars = 24;
+    auto cls = gen_3sat(nvars, 180, 5);
+    const lbool expected = solve_plain(cls, nvars);
+    ASSERT_EQ(expected, l_False);
+    ASSERT_EQ(solve_split(cls, nvars, 90), l_False);
+}
+
+TEST_F(UserPropClauseTest, forgettable_clauses_give_the_same_answer)
+{
+    const uint32_t nvars = 60;
+    auto cls = gen_3sat(nvars, 200, 17);
+    p.forgettable = true;
+    ASSERT_EQ(solve_split(cls, nvars, 140), l_True);
+    EXPECT_TRUE(model_satisfies(s->get_model(), cls));
+}
+
+TEST_F(UserPropClauseTest, everything_through_the_propagator)
+{
+    const uint32_t nvars = 40;
+    auto cls = gen_3sat(nvars, 120, 3);
+    const lbool expected = solve_plain(cls, nvars);
+    ASSERT_EQ(solve_split(cls, nvars, 0), expected);
+    if (expected == l_True) EXPECT_TRUE(model_satisfies(s->get_model(), cls));
+}
+
+TEST_F(UserPropClauseTest, many_seeds)
+{
+    for(uint32_t seed = 1; seed <= 15; seed++) {
+        const uint32_t nvars = 30;
+        auto cls = gen_3sat(nvars, 125, seed);
+        const lbool expected = solve_plain(cls, nvars);
+        ASSERT_EQ(solve_split(cls, nvars, cls.size()/2), expected) << "seed " << seed;
+        if (expected == l_True) {
+            EXPECT_TRUE(model_satisfies(s->get_model(), cls)) << "seed " << seed;
+        }
+        delete s; s = nullptr;
+        delete ref; ref = nullptr;
+        p = OraclePropagator();
+    }
+}
+
+TEST_F(UserPropClauseTest, unit_and_empty_clauses_from_the_propagator)
+{
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&p);
+    s->new_vars(8);
+    s->add_clause_outside(str_to_cl("1, 2"));
+    s->add_clause_outside(str_to_cl("-1, 3"));
+    for(uint32_t v = 0; v < 8; v++) s->add_observed_var(v);
+
+    // 1, then -1: the second makes the problem unsatisfiable
+    p.to_hand_over.push_back(str_to_cl("1"));
+    p.to_hand_over.push_back(str_to_cl("-1"));
+    p.start(s, 8);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_EQ(s->solve_with_assumptions(), l_False);
+    EXPECT_FALSE(s->okay());
+}
+
+TEST_F(UserPropClauseTest, frat_proof_is_written_without_tripping_anything)
+{
+    // Full checking of the emitted proof needs the frat-xor / cake_xlrup
+    // toolchain (see README_VERIFIER.md); what is checked here is that the
+    // FRAT path runs, produces output, and still gives the right answer.
+    const uint32_t nvars = 24;
+    auto cls = gen_3sat(nvars, 180, 5);
+    const lbool expected = solve_plain(cls, nvars);
+    ASSERT_EQ(expected, l_False);
+
+    const char* fname = "user_prop_test.frat";
+    FILE* f = fopen(fname, "wb");
+    ASSERT_NE(f, nullptr);
+
+    s = new Solver(&conf, &must_inter);
+    s->add_frat(f);
+    s->connect_external_propagator(&p);
+    s->new_vars(nvars);
+    for(size_t i = 0; i < 90; i++) {
+        vector<Lit> tmp = cls[i];
+        s->add_clause_outside(tmp);
+    }
+    for(uint32_t v = 0; v < nvars; v++) s->add_observed_var(v);
+    for(size_t i = 90; i < cls.size(); i++) p.to_hand_over.push_back(cls[i]);
+    p.start(s, nvars);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_EQ(s->solve_with_assumptions(), l_False);
+    delete s; s = nullptr;
+    fclose(f);
+
+    FILE* check = fopen(fname, "rb");
+    ASSERT_NE(check, nullptr);
+    fseek(check, 0, SEEK_END);
+    EXPECT_GT(ftell(check), 0);
+    fclose(check);
+    std::remove(fname);
+}
+
+TEST_F(UserPropClauseTest, forgettable_is_ignored_under_frat)
+{
+    // A redundant input clause cannot be represented in the proof, so a
+    // forgettable clause is simply kept. Answer must not change.
+    const uint32_t nvars = 30;
+    auto cls = gen_3sat(nvars, 125, 4);
+    const lbool expected = solve_plain(cls, nvars);
+
+    const char* fname = "user_prop_test_forget.frat";
+    FILE* f = fopen(fname, "wb");
+    ASSERT_NE(f, nullptr);
+
+    s = new Solver(&conf, &must_inter);
+    s->add_frat(f);
+    s->connect_external_propagator(&p);
+    s->new_vars(nvars);
+    for(size_t i = 0; i < 60; i++) {
+        vector<Lit> tmp = cls[i];
+        s->add_clause_outside(tmp);
+    }
+    for(uint32_t v = 0; v < nvars; v++) s->add_observed_var(v);
+    p.forgettable = true;
+    for(size_t i = 60; i < cls.size(); i++) p.to_hand_over.push_back(cls[i]);
+    p.start(s, nvars);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_EQ(s->solve_with_assumptions(), expected);
+    delete s; s = nullptr;
+    fclose(f);
+    std::remove(fname);
+}
+
+TEST_F(UserPropClauseTest, propagator_forces_a_specific_model)
+{
+    // Pin every variable with a unit clause handed over during the search.
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&p);
+    s->new_vars(12);
+    s->add_clause_outside(str_to_cl("1, 2, 3"));
+    for(uint32_t v = 0; v < 12; v++) {
+        s->add_observed_var(v);
+        p.to_hand_over.push_back(vector<Lit>{Lit(v, v % 2 == 0)});
+    }
+    p.start(s, 12);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    ASSERT_EQ(s->solve_with_assumptions(), l_True);
+    for(uint32_t v = 0; v < 12; v++) {
+        EXPECT_EQ(s->get_model()[v], v % 2 == 0 ? l_False : l_True) << "var " << v+1;
+    }
 }
 
 }

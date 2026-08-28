@@ -1262,6 +1262,16 @@ lbool Searcher::search()
             goto end;
         }
         if (confl.isnullptr()) confl = propagate<false>();
+        if (confl.isnullptr() && ext_prop != nullptr) {
+            //IPASIR-UP: unit propagation has reached a fixed point, so this is
+            //where the external propagator gets its say.
+            confl = external_propagate();
+            if (!solver->okay()) {
+                assert(!frat->enabled() || unsat_cl_ID != 0);
+                search_ret = l_False;
+                goto end;
+            }
+        }
         if (!confl.isnullptr()) {
             #if defined(STATS_NEEDED) || defined(FINAL_PREDICTOR)
             hist.trailDepthHist.push(trail.size());
