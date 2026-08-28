@@ -1793,6 +1793,94 @@ TEST_F(UserPropOtherApiTest, remove_observed_var_during_solving)
     EXPECT_GT(up.num_comparisons, 0U);
 }
 
+TEST_F(UserPropOtherApiTest, statistics_are_collected)
+{
+    // Everything the propagator did should be visible afterwards.
+    OraclePropagator op;
+    delete s;
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&op);
+    auto cls = gen_3sat(30, 125, 4);
+    s->new_vars(30);
+    for(size_t i = 0; i < 60; i++) { vector<Lit> tmp = cls[i]; s->add_clause_outside(tmp); }
+    for(uint32_t v = 0; v < 30; v++) s->add_observed_var(v);
+    for(size_t i = 60; i < cls.size(); i++) op.to_hand_over.push_back(cls[i]);
+    op.start(s, 30);
+
+    EXPECT_TRUE(s->ext_stats.empty());
+    must_inter.store(false, std::memory_order_relaxed);
+    s->solve_with_assumptions();
+
+    EXPECT_FALSE(s->ext_stats.empty());
+    EXPECT_GT(s->ext_stats.cb_calls, 0U);
+    EXPECT_GT(s->ext_stats.clause_calls, 0U);
+    EXPECT_EQ(s->ext_stats.clauses, cls.size() - 60);
+    EXPECT_GT(s->ext_stats.model_checks, 0U);
+    // the report itself must run (and survive a zero denominator)
+    testing::internal::CaptureStdout();
+    s->print_ext_prop_stats();
+    const std::string out = testing::internal::GetCapturedStdout();
+    EXPECT_NE(out.find("user-prop callbacks"), std::string::npos);
+    EXPECT_NE(out.find("user-prop clauses"), std::string::npos);
+
+    // and reconnecting starts a fresh count -- with nothing to report
+    s->disconnect_external_propagator();
+    s->connect_external_propagator(&op);
+    EXPECT_TRUE(s->ext_stats.empty());
+    testing::internal::CaptureStdout();
+    s->print_ext_prop_stats();
+    EXPECT_TRUE(testing::internal::GetCapturedStdout().empty());
+}
+
+TEST_F(UserPropOtherApiTest, is_decision_agrees_with_the_trail_under_assumptions)
+{
+    // A propagator that checks, at every model, that is_decision() says yes for
+    // exactly the literals the solver actually decided -- assumptions included,
+    // since CaDiCaL counts those as decisions too (Internal::is_decision).
+    class Checker : public MirrorPropagator {
+    public:
+        Solver* raw = nullptr;
+        uint32_t num_decisions_seen = 0;
+        uint32_t num_checked = 0;
+        bool cb_check_found_model(const vector<Lit>& model) override {
+            compare();
+            num_checked++;
+            vector<vector<Lit>> expected;
+            if (!raw->ext_get_observed_trail(expected)) return true;
+            // the first literal of each level above 0 is that level's decision
+            for(size_t lev = 1; lev < expected.size(); lev++) {
+                if (expected[lev].empty()) continue;
+                EXPECT_TRUE(raw->ext_is_decision(expected[lev][0]))
+                    << "level " << lev << " first literal not a decision";
+                num_decisions_seen++;
+            }
+            for(const Lit l: model) {
+                // a literal fixed at the root is never a decision
+                if (raw->ext_is_decision(l)) EXPECT_GT(raw->varData[
+                    raw->map_outer_to_inter(l.var())].level, 0U);
+            }
+            return true;
+        }
+    } chk;
+
+    delete s;
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&chk);
+    add_random_3sat(s, 40, 120, 19);
+    for(uint32_t v = 0; v < 40; v++) s->add_observed_var(v);
+    chk.raw = s;
+    chk.start(s, 40);
+
+    vector<Lit> assumps = {Lit(0, false), Lit(3, true), Lit(7, false)};
+    must_inter.store(false, std::memory_order_relaxed);
+    ASSERT_EQ(s->solve_with_assumptions(&assumps), l_True);
+    EXPECT_GT(chk.num_checked, 0U);
+    EXPECT_GT(chk.num_decisions_seen, 0U);
+    // Once solve() has returned, the solver is back at the root, so nothing is
+    // a decision any more -- is_decision() is only meaningful during solving.
+    for(const Lit l: assumps) EXPECT_FALSE(s->ext_is_decision(l)) << "assumption " << l;
+}
+
 TEST_F(UserPropOtherApiTest, implied_by_does_not_reach_the_propagator)
 {
     setup(40, 100, 7);

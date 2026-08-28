@@ -475,6 +475,8 @@ vector<Lit>* PropEngine::get_ext_reason(const Lit lit)
     vector<Lit>* ret = &ext_reasons[slot];
     ret->clear();
 
+    ext_stats.cb_calls++;
+    ext_stats.explanations++;
     const Lit elit = map_inter_to_outer(lit);
     Lit l = ext_prop->cb_add_reason_clause_lit(elit);
     while (l != lit_Undef) {

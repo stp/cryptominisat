@@ -230,6 +230,7 @@ class Solver : public Searcher
         /// notifications still owed, i.e. when the two are allowed to differ.
         /// A debugging aid for propagator authors.
         bool ext_get_observed_trail(vector<vector<Lit>>& out) const;
+        void print_ext_prop_stats() const;
 
         bool fully_enqueue_these(const vector<Lit>& toEnqueue);
         bool fully_enqueue_this(const Lit lit_ID);

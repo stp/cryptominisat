@@ -61,6 +61,7 @@ void Solver::connect_external_propagator(ExternalPropagator* p)
     //ext_pending_fixed.
     ext_notified = trail.size();
     ext_pending_fixed.clear();
+    ext_stats = ExtPropStats();
     verb_print(1, "[user-prop] external propagator connected");
 }
 
@@ -323,6 +324,8 @@ PropBy Searcher::add_external_clause(const bool forgettable_in, const Lit reason
     //////////
     ext_cl_outer.clear();
     ext_cl.clear();
+    ext_stats.cb_calls++;
+    if (reason_for != lit_Undef) ext_stats.explanations++;
     bool saw_reason_lit = false;
     Lit l = (reason_for == lit_Undef)
         ? ext_prop->cb_add_external_clause_lit()
@@ -363,6 +366,7 @@ PropBy Searcher::add_external_clause(const bool forgettable_in, const Lit reason
         ext_cl[j++] = q;
     }
     if (root_satisfied) {
+        ext_stats.clause_ignored++;
         verb_print(6, "[user-prop] external clause is root-satisfied, ignoring");
         frat_func_end();
         return PropBy();
@@ -385,6 +389,7 @@ PropBy Searcher::add_external_clause(const bool forgettable_in, const Lit reason
     //////////
     // The empty clause: we are done.
     //////////
+    ext_stats.clauses++;
     if (ext_cl.empty()) {
         verb_print(2, "[user-prop] external propagator gave the empty clause");
         set_unsat_cl_id(ID);
@@ -397,6 +402,7 @@ PropBy Searcher::add_external_clause(const bool forgettable_in, const Lit reason
     // A unit: it holds at the root, so go back there and enqueue it.
     //////////
     if (ext_cl.size() == 1) {
+        ext_stats.clause_units++;
         cancelUntil(0);
         //Cleaning above dropped every root-assigned literal, so after
         //backtracking to the root this one must be free.
@@ -441,6 +447,7 @@ PropBy Searcher::add_external_clause(const bool forgettable_in, const Lit reason
     }
     if (value(ext_cl[0]) == l_False) {
         VERBOSE_PRINT("[user-prop] external clause is falsified -> conflict");
+        ext_stats.clause_confls++;
         //Both watches are falsified on the current level: a normal conflict.
         assert(varData[ext_cl[0].var()].level == decisionLevel());
         if (ext_cl.size() == 2) failBinLit = ext_cl[0];
@@ -480,8 +487,11 @@ PropBy Searcher::external_propagate()
         // Algorithm 2: literals implied by the propagator
         //////////
         notify_assignments();
+        ext_stats.cb_calls++;
+        ext_stats.prop_calls++;
         Lit elit = ext_prop->cb_propagate();
         while (elit != lit_Undef) {
+            if (must_interrupt_asap()) return confl;
             release_assert(elit.var() < nVarsOuter() &&
                 "external propagation of a variable that does not exist");
             const Lit ilit = map_outer_to_inter(elit);
@@ -503,7 +513,9 @@ PropBy Searcher::external_propagate()
                     && decisionLevel() > 0
                     && !frat->enabled();
 
+                ext_stats.props++;
                 if (lazy) {
+                    ext_stats.props_lazy++;
                     enqueue<false>(ilit, decisionLevel(), PropBy(ExtPropTag()));
                 } else {
                     //Eagerly: the reason clause both explains and performs the
@@ -524,6 +536,8 @@ PropBy Searcher::external_propagate()
                 }
                 notify_assignments();
             }
+            ext_stats.cb_calls++;
+            ext_stats.prop_calls++;
             elit = ext_prop->cb_propagate();
         }
         if (!confl.isnullptr() || !okay()) break;
@@ -533,6 +547,8 @@ PropBy Searcher::external_propagate()
         //////////
         notify_assignments();
         bool forgettable = false;
+        ext_stats.cb_calls++;
+        ext_stats.clause_calls++;
         while (ext_prop->cb_has_external_clause(forgettable)) {
             confl = add_external_clause(forgettable);
             forgettable = false;
@@ -546,6 +562,11 @@ PropBy Searcher::external_propagate()
             notify_assignments();
             //The trail moved, so the propagator may have more to say now.
             another_round = true;
+            //A propagator with an endless supply of clauses must not make the
+            //solver deaf to interrupt_asap().
+            if (must_interrupt_asap()) return confl;
+            ext_stats.cb_calls++;
+            ext_stats.clause_calls++;
         }
     }
     return confl;
@@ -559,6 +580,7 @@ void Searcher::apply_ext_forced_backtrack()
 {
     assert(ext_forced_backtrack_set);
     ext_forced_backtrack_set = false;
+    ext_stats.forced_backtracks++;
     if (ext_forced_backtrack_level < decisionLevel()) {
         verb_print(6, "[user-prop] forced backtrack to level " << ext_forced_backtrack_level);
         cancelUntil(ext_forced_backtrack_level);
@@ -577,6 +599,7 @@ Lit Searcher::ext_decide()
 
     notify_assignments();
     ext_forced_backtrack_allowed = true;
+    ext_stats.cb_calls++;
     const Lit elit = ext_prop->cb_decide();
     ext_forced_backtrack_allowed = false;
     if (elit == lit_Undef) return lit_Undef;
@@ -590,6 +613,7 @@ Lit Searcher::ext_decide()
     //An already assigned literal is no decision at all; fall back on the
     //solver's own heuristic.
     if (value(ilit) != l_Undef) return lit_Undef;
+    ext_stats.decisions++;
     return ilit;
 }
 
@@ -623,6 +647,8 @@ lbool Searcher::external_check_solution()
     const uint32_t level_before = decisionLevel();
 
     ext_forced_backtrack_allowed = true;
+    ext_stats.cb_calls++;
+    ext_stats.model_checks++;
     const bool consistent = ext_prop->cb_check_found_model(ext_model);
     ext_forced_backtrack_allowed = false;
 
@@ -636,10 +662,13 @@ lbool Searcher::external_check_solution()
         return l_Undef;
     }
     if (consistent) return l_True;
+    ext_stats.models_rejected++;
 
     //Rejected: take whatever the propagator has to say about it.
     bool any_clause = false;
     bool forgettable = false;
+    ext_stats.cb_calls++;
+    ext_stats.clause_calls++;
     while (ext_prop->cb_has_external_clause(forgettable)) {
         any_clause = true;
         ext_confl = add_external_clause(forgettable);
@@ -652,6 +681,9 @@ lbool Searcher::external_check_solution()
             if (!ext_confl.isnullptr()) return l_Undef;
         }
         notify_assignments();
+        if (must_interrupt_asap()) return l_Undef;
+        ext_stats.cb_calls++;
+        ext_stats.clause_calls++;
     }
 
     if (!any_clause) {

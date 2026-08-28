@@ -169,6 +169,26 @@ public:
     // IPASIR-UP (see user_prop.h)
     ///////////////////
     ExternalPropagator* ext_prop = nullptr;
+    /// What the external propagator has been doing. Cumulative over the life of
+    /// the connection; reset when one is connected.
+    struct ExtPropStats {
+        uint64_t cb_calls = 0;           ///< every call into the propagator
+        uint64_t prop_calls = 0;         ///< cb_propagate()
+        uint64_t props = 0;              ///< literals it propagated
+        uint64_t props_lazy = 0;         ///< ...left unexplained for the time being
+        uint64_t explanations = 0;       ///< reason clauses asked for
+        uint64_t clause_calls = 0;       ///< cb_has_external_clause()
+        uint64_t clauses = 0;            ///< clauses taken from it
+        uint64_t clause_units = 0;       ///< ...that were units
+        uint64_t clause_confls = 0;      ///< ...that were falsified
+        uint64_t clause_ignored = 0;     ///< ...that were satisfied at the root
+        uint64_t decisions = 0;          ///< decisions it made
+        uint64_t model_checks = 0;       ///< cb_check_found_model()
+        uint64_t models_rejected = 0;
+        uint64_t forced_backtracks = 0;
+        [[nodiscard]] bool empty() const { return cb_calls == 0; }
+    };
+    ExtPropStats ext_stats;
     /// Observed variables, in OUTER numbering and in the order they were
     /// observed. Outer numbering is stable across renumbering, so this survives
     /// Solver::renumber_variables(). The matching per-variable flag lives in

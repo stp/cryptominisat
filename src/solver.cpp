@@ -2029,12 +2029,45 @@ void Solver::print_stats_time(
     }
 }
 
+void Solver::print_ext_prop_stats() const
+{
+    if (ext_stats.empty()) return;
+    print_stats_line(conf.prefix + "user-prop callbacks", ext_stats.cb_calls);
+    print_stats_line(conf.prefix + "user-prop props"
+        , ext_stats.props
+        , stats_line_percent(ext_stats.props, ext_stats.prop_calls)
+        , "% of cb_propagate calls");
+    print_stats_line(conf.prefix + "user-prop props lazy"
+        , ext_stats.props_lazy
+        , stats_line_percent(ext_stats.props_lazy, ext_stats.props)
+        , "% of ext props");
+    print_stats_line(conf.prefix + "user-prop explanations"
+        , ext_stats.explanations
+        , stats_line_percent(ext_stats.explanations, ext_stats.props)
+        , "% of ext props");
+    print_stats_line(conf.prefix + "user-prop clauses"
+        , ext_stats.clauses
+        , stats_line_percent(ext_stats.clauses, ext_stats.clause_calls)
+        , "% of cb_has_external_clause calls");
+    print_stats_line(conf.prefix + "user-prop cl units", ext_stats.clause_units);
+    print_stats_line(conf.prefix + "user-prop cl confl", ext_stats.clause_confls);
+    print_stats_line(conf.prefix + "user-prop cl ignored", ext_stats.clause_ignored);
+    print_stats_line(conf.prefix + "user-prop decisions", ext_stats.decisions);
+    print_stats_line(conf.prefix + "user-prop model checks", ext_stats.model_checks);
+    print_stats_line(conf.prefix + "user-prop models rejected"
+        , ext_stats.models_rejected
+        , stats_line_percent(ext_stats.models_rejected, ext_stats.model_checks)
+        , "% of model checks");
+    print_stats_line(conf.prefix + "user-prop forced BT", ext_stats.forced_backtracks);
+}
+
 void Solver::print_norm_stats(
     const double cpu_time,
     const double cpu_time_total,
     const double wallclock_time_started) const
 {
     sumSearchStats.print_short(sumPropStats.propagations, conf.do_print_times, conf.prefix);
+    print_ext_prop_stats();
     print_stats_line(conf.prefix + "props/decision"
         , float_div(propStats.propagations, sumSearchStats.decisions)
     );
