@@ -361,6 +361,12 @@ DLL_PUBLIC void SATSolver::set_num_threads(unsigned num)
         throw std::runtime_error(err);
     }
 
+    if (data->solvers[0]->ext_prop != nullptr) {
+        const char err[] = "ERROR: An external propagator cannot be used in multi-threaded mode";
+        std::cerr << err << endl;
+        throw std::runtime_error(err);
+    }
+
     if (data->cls > 0 || nVars() > 0) {
         const char err[] = "ERROR: You must first call set_num_threads() and only then add clauses and variables";
         std::cerr << err << endl;
@@ -2037,8 +2043,19 @@ DLL_PUBLIC bool SATSolver::get_opt_sampl_vars_set() const {
 namespace {
 //The propagator interface is only defined against a single search: make sure
 //the variables the user has asked for actually exist before we talk about them.
+//
+//This is the one place that flushes vars_to_add outside a
+//data->solvers.size() == 1 branch, so it has to do the check itself: handing
+//the pending variables to solvers[0] and clearing the counter would leave every
+//other thread without them.
 void ext_flush_vars(CMSatPrivateData* data)
 {
+    if (data->solvers.size() > 1) {
+        const char err[] = "ERROR: The external propagator interface cannot be used"
+            " in multi-threaded mode";
+        std::cerr << err << endl;
+        throw std::runtime_error(err);
+    }
     if (data->vars_to_add == 0) return;
     data->solvers[0]->new_vars(data->vars_to_add);
     data->vars_to_add = 0;
@@ -2047,11 +2064,6 @@ void ext_flush_vars(CMSatPrivateData* data)
 
 DLL_PUBLIC void SATSolver::connect_external_propagator(ExternalPropagator* p)
 {
-    if (data->solvers.size() > 1) {
-        const char err[] = "ERROR: An external propagator cannot be used in multi-threaded mode";
-        std::cerr << err << endl;
-        throw std::runtime_error(err);
-    }
     if (data->log) (*data->log) << "c Solver::connect_external_propagator()" << endl;
 
     ext_flush_vars(data);
