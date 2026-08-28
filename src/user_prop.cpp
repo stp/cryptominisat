@@ -297,10 +297,10 @@ PropBy Searcher::ext_attach_clause(const int32_t ID, const bool red)
         #if defined(STATS_NEEDED) || defined(FINAL_PREDICTOR)
         red_stats_extra.push_back(ClauseStatsExtra());
         cl->stats.extra_pos = red_stats_extra.size()-1;
-        auto& ext_stats = red_stats_extra[cl->stats.extra_pos];
-        ext_stats.introduced_at_conflict = sumConflicts;
-        ext_stats.orig_glue = cl->stats.glue;
-        ext_stats.orig_size = cl->size();
+        auto& stats_extra = red_stats_extra[cl->stats.extra_pos];
+        stats_extra.introduced_at_conflict = sumConflicts;
+        stats_extra.orig_glue = cl->stats.glue;
+        stats_extra.orig_size = cl->size();
         #endif
     }
 

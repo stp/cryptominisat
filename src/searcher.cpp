@@ -1762,14 +1762,14 @@ Clause* Searcher::handle_last_confl(
         #if defined(STATS_NEEDED) || defined(FINAL_PREDICTOR)
         red_stats_extra.push_back(ClauseStatsExtra());
         cl->stats.extra_pos = red_stats_extra.size()-1;
-        auto& ext_stats = red_stats_extra[cl->stats.extra_pos];
-        ext_stats.introduced_at_conflict = sumConflicts;
-        ext_stats.orig_glue = glue;
-        ext_stats.orig_size = cl->size();
+        auto& stats_extra = red_stats_extra[cl->stats.extra_pos];
+        stats_extra.introduced_at_conflict = sumConflicts;
+        stats_extra.orig_glue = glue;
+        stats_extra.orig_size = cl->size();
         #endif
         #ifdef STATS_NEEDED
         cl->stats.is_tracked = to_track;
-        if (cl->stats.is_tracked) ext_stats.orig_ID = ID;
+        if (cl->stats.is_tracked) stats_extra.orig_ID = ID;
         if (sqlStats) sqlStats->update_id(ID, ID); // this is how we know it's tracked
         #endif
         cl->stats.activity = 0.0f;
@@ -1777,8 +1777,8 @@ Clause* Searcher::handle_last_confl(
         unsigned which_arr = 2;
 
         #ifdef STATS_NEEDED
-        ext_stats.connects_num_communities = connects_num_communities;
-        ext_stats.orig_connects_num_communities = connects_num_communities;
+        stats_extra.connects_num_communities = connects_num_communities;
+        stats_extra.orig_connects_num_communities = connects_num_communities;
         cl->stats.locked_for_data_gen =
             (double)rnd_uint(solver->mtrand,100000)/100000.0 < conf.lock_for_data_gen_ratio;
         #endif
