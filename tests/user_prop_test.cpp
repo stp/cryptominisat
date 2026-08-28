@@ -1228,6 +1228,71 @@ public:
     }
 };
 
+// Every 'o' (original clause) line of a text FRAT proof, literals only.
+static vector<vector<Lit>> read_frat_original_clauses(const char* fname)
+{
+    vector<vector<Lit>> ret;
+    FILE* f = fopen(fname, "rb");
+    if (f == nullptr) return ret;
+    char line[8192];
+    while (fgets(line, sizeof(line), f) != nullptr) {
+        if (line[0] != 'o' || line[1] != ' ') continue;
+        vector<Lit> cl;
+        const char* at = line+2;
+        bool first = true; // the ID
+        while (true) {
+            char* end = nullptr;
+            const long v = strtol(at, &end, 10);
+            if (end == at) break;
+            at = end;
+            if (first) { first = false; continue; }
+            if (v == 0) break;
+            cl.push_back(Lit((uint32_t)std::labs(v)-1, v < 0));
+        }
+        std::sort(cl.begin(), cl.end());
+        ret.push_back(cl);
+    }
+    fclose(f);
+    return ret;
+}
+
+TEST_F(UserPropClauseTest, external_clauses_are_original_clauses_in_the_proof)
+{
+    // An external clause enters the proof as an input clause (JAIR 81, 3.6), so
+    // what comes out certifies the CNF *and* everything the propagator handed
+    // over. Check it is written down, and written down over the right variables:
+    // the proof writer renumbers what it is given, and this path hands it
+    // literals that are already in the user's numbering.
+    const char* fname = "user_prop_test_orig.frat";
+    FILE* f = fopen(fname, "wb");
+    ASSERT_NE(f, nullptr);
+
+    DeepHandoverPropagator dp;
+    dp.chain = 6;
+    dp.hand_over_at = 6;
+    dp.clause = str_to_cl("7, -8, 9");
+
+    s = new Solver(&conf, &must_inter);
+    s->add_frat(f);
+    s->connect_external_propagator(&dp);
+    s->new_vars(12);
+    for(uint32_t v = 0; v < 12; v++) s->add_observed_var(v);
+    dp.start(s, 12);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    ASSERT_EQ(s->solve_with_assumptions(), l_True);
+    ASSERT_TRUE(dp.handed);
+    delete s; s = nullptr;
+    fclose(f);
+
+    vector<Lit> want = dp.clause;
+    std::sort(want.begin(), want.end());
+    const vector<vector<Lit>> got = read_frat_original_clauses(fname);
+    EXPECT_NE(std::find(got.begin(), got.end(), want), got.end())
+        << "the external clause is not in the proof as an original clause";
+    std::remove(fname);
+}
+
 TEST_F(UserPropClauseTest, a_satisfied_clause_does_not_move_the_trail)
 {
     // Decisions put var v on level v+1, all true. The clause is satisfied by

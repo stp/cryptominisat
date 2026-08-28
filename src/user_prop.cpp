@@ -406,10 +406,21 @@ PropBy Searcher::add_external_clause(const bool forgettable_in, const Lit reason
 
     //////////
     // Record it in the proof. An external clause is an input clause that
-    // happens to arrive during the derivation (see JAIR 81, section 3.6).
+    // happens to arrive during the derivation (see JAIR 81, section 3.6), so
+    // what comes out is a proof of the CNF *together with* everything the
+    // propagator handed over -- not of the CNF on its own.
     //////////
     int32_t ID = ++clauseID;
     if (frat->enabled()) {
+        //The writer maps every literal through inter_to_outerMain on its way
+        //out, so it wants INTER numbering. ext_cl_outer is not that -- it is
+        //what the propagator gave us -- and this is only right because the two
+        //numberings still agree: renumber_variables() is skipped while a proof
+        //is being written (see execute_inprocess_strategy()), and an observed
+        //variable is never eliminated or replaced, so nothing moves it.
+        //add_clause_outer() writes its origcl line the same way and leans on
+        //exactly the same thing.
+        for([[maybe_unused]] const Lit o: ext_cl_outer) assert(map_outer_to_inter(o) == o);
         *frat << "external clause\n" << origcl << ID << ext_cl_outer << fin;
         const int32_t cleaned_ID = ++clauseID;
         *frat << add << cleaned_ID << ext_cl << fin;
