@@ -114,12 +114,12 @@ public:
     /// represents.
     ///
     /// Every other literal must have been falsified *at the time of the
-    /// propagation*, not merely by the time the question is asked. With
-    /// SATSolver::set_lazy_external_reasons() the question can come much later,
-    /// so record the reason when the propagation is made rather than working it
-    /// out from the trail on demand -- by then the solver may have assigned
-    /// literals that have no business being in it, and conflict analysis has no
-    /// way to resolve through them.
+    /// propagation*, not merely by the time the question is asked. By default
+    /// the question comes much later, during conflict analysis (see
+    /// SATSolver::set_lazy_external_reasons()), so record the reason when the
+    /// propagation is made rather than working it out from the trail on demand
+    /// -- by then the solver may have assigned literals that have no business
+    /// being in it, and conflict analysis has no way to resolve through them.
     virtual Lit cb_add_reason_clause_lit(Lit propagated_lit) {
         (void)propagated_lit;
         return lit_Undef;
