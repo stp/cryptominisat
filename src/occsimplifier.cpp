@@ -844,6 +844,9 @@ bool OccSimplifier::can_eliminate_var(const uint32_t var, bool ignore_xor) const
     assert(var < solver->nVars());
     if (solver->value(var) != l_Undef ||
         solver->varData[var].removed != Removed::none ||
+        //IPASIR-UP: observed variables are frozen. The external propagator
+        //holds a view of them, so they must keep existing in the search.
+        solver->varData[var].observed ||
         solver->var_inside_assumptions(var) != l_Undef ||
         (!ignore_xor && xorclauses_vars[var]) ||
         ((solver->conf.sampling_vars_set || solver->fast_backw.fast_backw_on) &&

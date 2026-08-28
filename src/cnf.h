@@ -178,6 +178,10 @@ public:
     /// speculative work of its own (probing, distilling, in-tree probing, ...)
     /// whose assignments are not part of the search.
     bool ext_prop_private_steps = false;
+    /// Literals that became observed while already fixed at decision level 0.
+    /// Their trail position is behind the notification cursor, so they are
+    /// handed over separately, as part of the level-0 prefix.
+    vector<Lit> ext_pending_fixed;
     /// force_backtrack() is only honoured from inside cb_decide() and
     /// cb_check_found_model(); the request is recorded here and acted on once
     /// the callback has returned.

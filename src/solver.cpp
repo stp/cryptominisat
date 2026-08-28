@@ -3091,6 +3091,17 @@ void Solver::renumber_xors_to_outside(const vector<Xor>& xors, vector<Xor>& xors
 // and the matrices are created and initialized
 bool Solver::find_and_init_all_matrices() {
     frat_func_start();
+    //IPASIR-UP: Gauss-Jordan elimination assigns literals at a lower decision
+    //level than the current one (see EGaussian::prop_lit()), which the
+    //stack-like trail view of the external propagator cannot express. Plain
+    //XOR propagation is in-order and stays enabled.
+    if (ext_prop != nullptr) {
+        if (!clear_gauss_matrices(false)) return false;
+        verb_print(1, "[find&init matx] external propagator connected -> no matrices");
+        xorclauses_updated = false;
+        frat_func_end();
+        return true;
+    }
     if (!xorclauses_updated) {
         if (conf.verbosity >= 2) {
             cout << "c [find&init matx] XORs not updated-> not performing matrix init. Matrices: "
