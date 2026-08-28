@@ -314,9 +314,9 @@ Literals crossing the interface use `CMSat::Lit`, the same numbering as
 `add_clause()` and `get_model()`, and `lit_Undef` closes a stream of literals.
 
 While a propagator is connected the solver runs single-threaded, and Gauss-Jordan
-elimination and chronological backtracking are switched off. Observed variables
-are frozen: simplification will not eliminate or replace them, so the
-propagator's view of them stays valid.
+elimination, chronological backtracking and symmetry breaking are switched off.
+Observed variables are frozen: simplification will not eliminate or replace them,
+so the propagator's view of them stays valid.
 
 ## Preprocessing
 If you wish to use CryptoMiniSat as a preprocessor, we encourage you

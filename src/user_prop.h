@@ -40,8 +40,8 @@ all of them must be over *observed* variables, declared through
 SATSolver::add_observed_var().
 
 At most one propagator can be connected to a solver. Connecting a propagator
-restricts the solver to a single thread and disables Gauss-Jordan elimination
-and chronological backtracking.
+restricts the solver to a single thread and disables Gauss-Jordan elimination,
+chronological backtracking and symmetry breaking.
 
 A note on SATSolver::is_decision(): a literal counts as a decision when it is
 assigned above the root with no reason, which includes the assumptions of the

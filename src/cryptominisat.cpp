@@ -1384,6 +1384,15 @@ DLL_PUBLIC std::vector<std::vector<Lit>> SATSolver::get_cls_defining_var(uint32_
 }
 
 DLL_PUBLIC void SATSolver::reverse_bce() {
+    //Adding a blocked clause keeps the formula satisfiable but throws away the
+    //models that do not satisfy it. The external propagator's constraints are
+    //not part of what the clause was checked against, so a model it would have
+    //accepted can be among them.
+    if (data->solvers[0]->ext_prop != nullptr) {
+        const char err[] = "ERROR: reverse_bce() cannot be used with an external propagator";
+        std::cerr << err << endl;
+        throw std::runtime_error(err);
+    }
     return data->solvers[0]->reverse_bce();
 
 }

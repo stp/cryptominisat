@@ -1897,7 +1897,13 @@ lbool Solver::execute_inprocess_strategy(
                 }
             }
         } else if (token == "breakid") {
+            //IPASIR-UP: symmetry breaking only preserves satisfiability of the
+            //clauses the solver can see. The external propagator's constraints
+            //are not among them and need not be symmetric under the same group,
+            //so a model it would have accepted can be broken away and the answer
+            //come back UNSAT. Off while a propagator is connected.
             if (conf.doBreakid
+                && ext_prop == nullptr
                 && !frat->enabled()
                 && (solveStats.num_simplify == 0 ||
                    (solveStats.num_simplify % conf.breakid_every_n == (conf.breakid_every_n-1)))

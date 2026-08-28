@@ -497,6 +497,24 @@ TEST(user_prop_connect, multi_threading_is_refused)
     }
 }
 
+TEST(user_prop_connect, model_changing_simplification_is_refused)
+{
+    // Adding blocked clauses keeps the formula satisfiable but drops the models
+    // that do not satisfy them, and the propagator's own constraints had no say
+    // in which ones those are.
+    SATSolver s;
+    NoopPropagator p;
+    s.new_vars(4);
+    s.add_clause(str_to_cl("1, 2"));
+    s.connect_external_propagator(&p);
+    s.add_observed_var(0);
+    EXPECT_THROW(s.reverse_bce(), std::runtime_error);
+
+    // ...and it is fine again once the propagator is gone
+    s.disconnect_external_propagator();
+    EXPECT_EQ(s.solve(), l_True);
+}
+
 TEST(user_prop_connect, no_propagator_no_change)
 {
     // The exact same problem with and without a no-op propagator must give the
