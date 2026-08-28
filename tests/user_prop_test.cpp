@@ -558,6 +558,25 @@ TEST(user_prop_observe, observe_and_unobserve)
     EXPECT_FALSE(s.is_observed_var(3));
 }
 
+TEST(user_prop_observe, unobserved_root_unit_is_not_notified_later)
+{
+    SATSolver s;
+    NoopPropagator p;
+    s.new_var();
+    ASSERT_TRUE(s.add_clause(vector<Lit>{Lit(0, false)}));
+    s.connect_external_propagator(&p);
+
+    // The assignment predates the connection, so observing it puts it in the
+    // separate fixed-assignment queue. Remove it before any callback can drain
+    // that queue.
+    s.add_observed_var(0);
+    s.remove_observed_var(0);
+    ASSERT_EQ(s.solve(), l_True);
+
+    EXPECT_FALSE(s.is_observed_var(0));
+    EXPECT_EQ(p.num_assignment_notifications, 0U);
+}
+
 TEST(user_prop_observe, disconnect_resets_observed)
 {
     SATSolver s;
