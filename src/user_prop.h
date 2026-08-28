@@ -111,7 +111,8 @@ public:
     /// The reason for an earlier cb_propagate() of 'propagated_lit', given one
     /// literal at a time and closed with lit_Undef. The clause must contain
     /// 'propagated_lit' and must be implied by the constraints the propagator
-    /// represents.
+    /// represents. The set of observed variables cannot be changed from inside
+    /// this callback: the question is about the trail as it is.
     ///
     /// Every other literal must have been falsified *at the time of the
     /// propagation*, not merely by the time the question is asked. By default

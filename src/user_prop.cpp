@@ -85,6 +85,11 @@ void Solver::add_observed_var(const uint32_t outer_var)
         "Cannot observe a variable without a connected external propagator");
     release_assert(outer_var < nVarsOuter() &&
         "Cannot observe a variable that does not exist yet -- call new_vars() first");
+    //varData is never shrunk by renumbering, so this can be asked before
+    //anything else -- and a variable that is already observed changes nothing.
+    if (varData[map_outer_to_inter(outer_var)].observed) return;
+    release_assert(!ext_explaining &&
+        "The set of observed variables cannot change while a reason clause is being asked for");
 
     //Renumbering may have moved the variable out of the range the search works
     //on -- Solver::save_on_var_memory() shrinks nVars() past everything that is
@@ -102,7 +107,6 @@ void Solver::add_observed_var(const uint32_t outer_var)
 
     const uint32_t inter_var = map_outer_to_inter(outer_var);
     release_assert(inter_var < nVars());
-    if (varData[inter_var].observed) return;
 
     //The variable must exist in the search for the propagator to be able to
     //see it. Simplification may have removed it during an earlier solve().
@@ -158,6 +162,8 @@ void Solver::remove_observed_var(const uint32_t outer_var)
     release_assert(outer_var < nVarsOuter());
     const uint32_t inter_var = map_outer_to_inter(outer_var);
     if (!varData[inter_var].observed) return;
+    release_assert(!ext_explaining &&
+        "The set of observed variables cannot change while a reason clause is being asked for");
 
     //Only an unassigned variable can be un-observed: otherwise the implication
     //graph may still hold an external propagation over it that we would no
@@ -183,6 +189,8 @@ void Solver::remove_observed_var(const uint32_t outer_var)
 
 void Solver::reset_observed_vars()
 {
+    release_assert(!ext_explaining &&
+        "The set of observed variables cannot change while a reason clause is being asked for");
     //Removing the variables one at a time would backtrack below the earliest
     //non-root observed assignment. Do that once, before clearing the flags:
     //in particular, every lazy external propagation then leaves the implication
@@ -372,6 +380,9 @@ PropBy Searcher::add_external_clause(const bool forgettable_in, const Lit reason
     ext_stats.cb_calls++;
     if (reason_for != lit_Undef) ext_stats.explanations++;
     bool saw_reason_lit = false;
+    //A reason clause answers a question about one particular propagation;
+    //the observed set is frozen while it is being answered (see CNF::ext_explaining).
+    ext_explaining = (reason_for != lit_Undef);
     Lit l = (reason_for == lit_Undef)
         ? ext_prop->cb_add_external_clause_lit()
         : ext_prop->cb_add_reason_clause_lit(reason_for);
@@ -384,6 +395,7 @@ PropBy Searcher::add_external_clause(const bool forgettable_in, const Lit reason
             ? ext_prop->cb_add_external_clause_lit()
             : ext_prop->cb_add_reason_clause_lit(reason_for);
     }
+    ext_explaining = false;
     release_assert((reason_for == lit_Undef || saw_reason_lit) &&
         "the reason clause of an external propagation must contain the propagated literal");
 

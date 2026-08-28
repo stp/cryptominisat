@@ -223,6 +223,13 @@ public:
     bool ext_forced_backtrack_allowed = false;
     bool ext_forced_backtrack_set = false;
     uint32_t ext_forced_backtrack_level = 0;
+    /// A reason clause is being read from the propagator. The set of observed
+    /// variables cannot change while that goes on: when the reason is asked
+    /// for lazily this is conflict analysis, which cannot have the trail move
+    /// from under it, and even when it is asked for eagerly the literal being
+    /// explained has already been translated to INTER numbering, which
+    /// observing a renumbered-out variable would change.
+    bool ext_explaining = false;
     [[nodiscard]] bool ext_prop_active() const {
         return ext_prop != nullptr && !ext_prop_private_steps;
     }

@@ -2366,6 +2366,65 @@ TEST_F(UserPropLazyTest, a_reason_naming_a_later_assignment_is_caught)
                  "assigned after the one it explains");
 }
 
+// Observes a variable from inside cb_add_reason_clause_lit(). Asked lazily,
+// that is the middle of conflict analysis, which cannot have the trail move
+// under it; asked eagerly, the literal being explained has already been
+// translated, and observing can renumber. So the observed set is frozen for
+// the duration, whatever the variable's state.
+class ObservesWhileExplainingPropagator : public UnitPropagator
+{
+public:
+    uint32_t to_observe = 0;
+    bool only_when_asked_lazily = false;
+
+    Lit cb_add_reason_clause_lit(Lit propagated_lit) override {
+        if (cur_lit == 0) {
+            // A lazily asked reason explains a literal that is true on the
+            // trail with a placeholder reason; an eagerly asked one is being
+            // read before the literal is assigned, or for a falsified one.
+            const Lit il = s->map_outer_to_inter(propagated_lit);
+            const bool asked_lazily =
+                s->value(il) == l_True && s->varData[il.var()].reason.isExt();
+            if (!only_when_asked_lazily || asked_lazily) s->add_observed_var(to_observe);
+        }
+        return UnitPropagator::cb_add_reason_clause_lit(propagated_lit);
+    }
+};
+
+static void observe_while_explaining(SolverConf& conf, bool only_when_asked_lazily)
+{
+    const uint32_t nvars = 25;
+    auto cls = gen_3sat(nvars, 100, 9);
+    ObservesWhileExplainingPropagator op;
+    op.to_observe = nvars; // exists, but the theory never mentions it
+    op.only_when_asked_lazily = only_when_asked_lazily;
+    std::atomic<bool> inter;
+    inter.store(false, std::memory_order_relaxed);
+    Solver solver(&conf, &inter);
+    solver.connect_external_propagator(&op);
+    solver.new_vars(nvars + 1);
+    for(uint32_t v = 0; v < nvars; v++) solver.add_observed_var(v);
+    op.theory = cls;
+    op.start_theory(&solver, nvars + 1);
+    solver.solve_with_assumptions();
+}
+
+TEST_F(UserPropLazyTest, observing_while_a_reason_is_being_asked_for_is_caught)
+{
+    // Only when the reason is asked for lazily -- from inside conflict
+    // analysis.
+    conf.ext_lazy_reasons = true;
+    EXPECT_DEATH(observe_while_explaining(conf, true),
+                 "while a reason clause is being asked for");
+}
+
+TEST_F(UserPropLazyTest, observing_while_a_reason_is_asked_for_eagerly_is_caught_too)
+{
+    conf.ext_lazy_reasons = false;
+    EXPECT_DEATH(observe_while_explaining(conf, false),
+                 "while a reason clause is being asked for");
+}
+
 }
 
 ////////////////////////////

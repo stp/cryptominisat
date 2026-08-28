@@ -488,6 +488,11 @@ vector<Lit>* PropEngine::get_ext_reason(const Lit lit)
 
     ext_stats.cb_calls++;
     ext_stats.explanations++;
+    //This is conflict analysis: the trail cannot be backtracked from under it,
+    //and the reason being read must be over the observed variables as they
+    //are. Observing or un-observing from the callback is refused (see
+    //CNF::ext_explaining); CaDiCaL REQUIREs the same.
+    ext_explaining = true;
     const Lit elit = map_inter_to_outer(lit);
     Lit l = ext_prop->cb_add_reason_clause_lit(elit);
     while (l != lit_Undef) {
@@ -509,6 +514,7 @@ vector<Lit>* PropEngine::get_ext_reason(const Lit lit)
         ret->push_back(inter);
         l = ext_prop->cb_add_reason_clause_lit(elit);
     }
+    ext_explaining = false;
 
     //Conflict analysis assumes an ordinary clause: in particular, the pivot
     //occurs exactly once. Canonicalize benign duplicates before handing the
