@@ -2105,3 +2105,8 @@ DLL_PUBLIC void SATSolver::unphase(uint32_t var)
     ext_flush_vars(data);
     data->solvers[0]->ext_unphase(var);
 }
+
+DLL_PUBLIC void SATSolver::set_lazy_external_reasons(bool lazy)
+{
+    for (Solver* s : data->solvers) s->conf.ext_lazy_reasons = lazy;
+}

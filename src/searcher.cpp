@@ -281,6 +281,15 @@ void Searcher::normalClMinim()
                 break;
             }
 
+            case ext_t: {
+                auto ext_reason = get_ext_reason(~learnt_clause[i]);
+                lits = ext_reason->data();
+                size = ext_reason->size()-1;
+                sumAntecedentsLits += size;
+                id = 0;
+                break;
+            }
+
             default: release_assert(false);
         }
 
@@ -508,6 +517,19 @@ void Searcher::add_lits_to_learnt(
             break;
         }
 
+        case ext_t: {
+            //IPASIR-UP: never a conflict, always the reason of a propagation,
+            //so 'p' is the propagated literal and comes first in the clause.
+            assert(p != lit_Undef);
+            auto ext_reason = get_ext_reason(p);
+            lits = ext_reason->data();
+            size = ext_reason->size();
+            sumAntecedentsLits += size;
+            id = 0; // so we don't get a warning, assert below
+            assert(!frat->enabled());
+            break;
+        }
+
         case null_clause_t:
         default: release_assert(false && "Error in conflict analysis (otherwise should be UIP)");
     }
@@ -530,6 +552,7 @@ void Searcher::add_lits_to_learnt(
                 break;
 
             case bnn_t:
+            case ext_t:
             case clause_t:
             case xor_t:
                 x = lits[i];
@@ -641,6 +664,14 @@ bool Searcher::try_shrink_block(
             case bnn_t: {
                 assert(!frat->enabled());
                 auto cl = get_bnn_reason(bnns[reason.getBNNidx()], uip);
+                lits = cl->data();
+                size = cl->size()-1;
+                break;
+            }
+
+            case ext_t: {
+                assert(!frat->enabled());
+                auto cl = get_ext_reason(uip);
                 lits = cl->data();
                 size = cl->size()-1;
                 break;
@@ -997,6 +1028,7 @@ void Searcher::simple_create_learnt_clause(
             }
 
             case bnn_t:
+            case ext_t:
             case xor_t:
             case clause_t: {
                 Lit* lits;
@@ -1007,6 +1039,10 @@ void Searcher::simple_create_learnt_clause(
                     size = cl->size();
                 } else if (confl.getType() == bnn_t) {
                     auto cl = get_bnn_reason(bnns[confl.getBNNidx()], p);
+                    lits = cl->data();
+                    size = cl->size();
+                } else if (confl.getType() == ext_t) {
+                    auto cl = get_ext_reason(p);
                     lits = cl->data();
                     size = cl->size();
                 } else {
@@ -1327,6 +1363,15 @@ bool Searcher::litRedundant(const Lit p, uint32_t abstract_levels)
                 break;
             }
 
+            case ext_t: {
+                vector<Lit>* cl = get_ext_reason(
+                    Lit(p_analyze.var(), value(p_analyze.var()) == l_False));
+                lits = cl->data();
+                size = cl->size()-1;
+                ID = 0;
+                break;
+            }
+
             case binary_t:
                 size = 1;
                 ID = reason.get_id();
@@ -1347,6 +1392,7 @@ bool Searcher::litRedundant(const Lit p, uint32_t abstract_levels)
             switch (type) {
                 case xor_t:
                 case bnn_t:
+                case ext_t:
                 case clause_t:
                     p2 = lits[i+1];
                     break;
@@ -1468,6 +1514,14 @@ void Searcher::analyze_final_confl_with_assumptions(const Lit p, vector<Lit>& ou
                         vector<Lit>* cl = get_bnn_reason(bnns[reason.getBNNidx()], lit_Undef);
                         for(const Lit lit: *cl) {
                             if (varData[lit.var()].level > 0)seen[lit.var()] = 1;
+                        }
+                        break;
+                    }
+
+                    case ext_t : {
+                        vector<Lit>* cl = get_ext_reason(trail[i].lit);
+                        for(const Lit lit: *cl) {
+                            if (varData[lit.var()].level > 0) seen[lit.var()] = 1;
                         }
                         break;
                     }
@@ -3593,6 +3647,13 @@ void Searcher::cancelUntil(uint32_t blevel)
                 bnn_reasons_empty_slots.push_back(reason_idx);
                 varData[var].reason = PropBy();
             }
+            //IPASIR-UP: same for a materialised external reason
+            if (varData[var].reason.isExt()) {
+                if (varData[var].reason.ext_reason_set()) {
+                    ext_reasons_empty_slots.push_back(varData[var].reason.get_ext_reason());
+                }
+                varData[var].reason = PropBy();
+            }
             if (!bnns.empty()) reverse_prop(trail[i].lit);
 
             #ifdef STATS_NEEDED_BRANCH
@@ -3809,6 +3870,13 @@ ConflictData Searcher::find_conflict_level(PropBy& pb) {
                 size = cl->size();
                 break;
             }
+
+            case PropByType::ext_t:
+                //IPASIR-UP: external propagation is only ever a reason, never a
+                //conflict -- a falsified external propagation is turned into a
+                //real clause by add_external_clause().
+                release_assert(false);
+                break;
 
             default:
                 release_assert(false);

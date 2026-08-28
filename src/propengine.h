@@ -249,6 +249,10 @@ public:
         unit_cl_XIDs[v] = xid;
         enqueue<inprocess>(p, 0, PropBy(), false);
     }
+    /// IPASIR-UP: the reason clause of an external propagation of 'lit', asked
+    /// for from the propagator the first time conflict analysis needs it. The
+    /// propagated literal is always first.
+    vector<Lit>* get_ext_reason(const Lit lit);
 
     /////////////////////
     // Branching

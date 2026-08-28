@@ -199,6 +199,12 @@ class DLL_PUBLIC SolverConf
         int do_chrono_reuse_trail;
         int do_restart_reuse_trail;
 
+        //IPASIR-UP: explain external propagations only when conflict analysis
+        //needs the reason, rather than asking for it straight away. Saves
+        //learning reason clauses that are never used, at the price of not being
+        //able to produce a proof. See user_prop.h.
+        bool ext_lazy_reasons;
+
         //decision-based conflict clause generation
         int       do_decision_based_cl;
         uint32_t  decision_based_cl_max_levels;
