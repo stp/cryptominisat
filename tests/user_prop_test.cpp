@@ -1793,6 +1793,118 @@ TEST_F(UserPropOtherApiTest, remove_observed_var_during_solving)
     EXPECT_GT(up.num_comparisons, 0U);
 }
 
+// Observes or un-observes one particular variable, once, from inside
+// cb_decide(). Both calls backtrack when the variable is assigned, so the
+// solver must not go on to make a decision on top of what is left.
+class LateObservingPropagator : public MirrorPropagator
+{
+public:
+    Solver* raw = nullptr;
+    uint32_t var = 0;
+    uint32_t at_level = 0;      // act once the search is this deep
+    bool observe = true;        // observe, or un-observe
+    bool done = false;
+    uint32_t level_when_done = 0;
+
+    Lit cb_decide() override {
+        if (done || raw->decisionLevel() < at_level) return lit_Undef;
+        done = true;
+        level_when_done = raw->decisionLevel();
+        if (observe) raw->add_observed_var(var);
+        else raw->remove_observed_var(var);
+        return lit_Undef;
+    }
+};
+
+TEST_F(UserPropOtherApiTest, observing_a_fixed_variable_from_cb_decide)
+{
+    // The variable is fixed at the root, so it is handed over as part of the
+    // level-0 prefix rather than through the notification cursor. Opening a
+    // decision level before that happens would file a permanent assignment
+    // under a level that is about to be backtracked over.
+    LateObservingPropagator lp;
+    delete s;
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&lp);
+    add_random_3sat(s, 40, 120, 17);
+    s->add_clause_outside(str_to_cl("1"));
+    for(uint32_t v = 1; v < 40; v++) s->add_observed_var(v);
+    lp.raw = s;
+    lp.var = 0;
+    lp.start(s, 40);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_EQ(s->solve_with_assumptions(), l_True);
+    EXPECT_TRUE(lp.done);
+    EXPECT_GT(lp.num_comparisons, 0U);
+    // back at the root, and the fixed literal is part of the root prefix
+    ASSERT_EQ(lp.stack.size(), 1U);
+    EXPECT_NE(std::find(lp.stack[0].begin(), lp.stack[0].end(), Lit(0, false)),
+              lp.stack[0].end()) << "the root assignment was notified at the wrong level";
+}
+
+// Observing or un-observing an assumption variable backtracks into the
+// assumption prefix. new_decision() indexes assumptions[] by decision level,
+// so deciding anything else there skips an assumption for good.
+static void check_assumptions_survive_cb_decide(SolverConf& conf,
+    std::atomic<bool>& must_inter, Solver*& s, bool observe)
+{
+    const uint32_t nvars = 20;
+    const uint32_t num_assumps = 5;
+
+    LateObservingPropagator lp;
+    delete s;
+    // Decide negatively, so that an assumption that never gets decided is left
+    // falsified rather than accidentally satisfied.
+    conf.polarity_mode = PolarityMode::polarmode_neg;
+    conf.simplify_at_startup = false;
+    conf.doVarElim = false;
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&lp);
+    s->new_vars(nvars);
+
+    // The assumptions are over variables that appear in no clause, so each one
+    // is decided, on exactly the level its position in the stack implies.
+    // Everything else is satisfiable and deep enough to get past them.
+    vector<Lit> assumps;
+    for(uint32_t v = 0; v < num_assumps; v++) assumps.push_back(Lit(v, false));
+    for(uint32_t i = num_assumps; i + 2 < nvars; i++) {
+        s->add_clause_outside(vector<Lit>{Lit(i, false), Lit(i+1, false), Lit(i+2, true)});
+        s->add_clause_outside(vector<Lit>{Lit(i, true), Lit(i+1, true), Lit(i+2, false)});
+    }
+
+    // Observe everything but the assumption we are about to pick up, or
+    // everything including it if we are about to drop it again.
+    const uint32_t target = 2;           // the middle assumption
+    for(uint32_t v = 0; v < nvars; v++) {
+        if (observe && v == target) continue;
+        s->add_observed_var(v);
+    }
+    lp.raw = s;
+    lp.var = target;
+    lp.at_level = num_assumps + 1;       // past the prefix, so it is complete
+    lp.observe = observe;
+    lp.start(s, nvars);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    ASSERT_EQ(s->solve_with_assumptions(&assumps), l_True);
+    ASSERT_TRUE(lp.done) << "cb_decide() never got deep enough to act";
+    for(const Lit a: assumps) {
+        EXPECT_EQ(s->get_model()[a.var()], a.sign() ? l_False : l_True)
+            << "assumption " << a << " is not satisfied by the model";
+    }
+}
+
+TEST_F(UserPropOtherApiTest, observing_an_assumption_from_cb_decide)
+{
+    check_assumptions_survive_cb_decide(conf, must_inter, s, true);
+}
+
+TEST_F(UserPropOtherApiTest, un_observing_an_assumption_from_cb_decide)
+{
+    check_assumptions_survive_cb_decide(conf, must_inter, s, false);
+}
+
 TEST_F(UserPropOtherApiTest, statistics_are_collected)
 {
     // Everything the propagator did should be visible afterwards.

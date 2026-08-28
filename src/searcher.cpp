@@ -1423,9 +1423,26 @@ lbool Searcher::new_decision() {
     if (next == lit_Undef && ext_prop != nullptr) {
         //IPASIR-UP: every assumption is satisfied by now, so the propagator is
         //allowed to have its say on the next decision (Algorithm 4).
+        const size_t ext_trail_before = trail.size();
+        const uint32_t ext_level_before = decisionLevel();
         next = ext_decide();
         if (ext_forced_backtrack_set) {
             apply_ext_forced_backtrack();
+            return l_Undef;
+        }
+        //cb_decide() is allowed to observe and un-observe variables, and both
+        //backtrack when the variable is assigned. Deciding on top of what is
+        //left would put a decision of ours where an assumption belongs -- the
+        //loop above indexes assumptions[] by decision level, so an assumption
+        //would be skipped altogether -- and would open a decision level with a
+        //root assignment still waiting to be handed over. Go back to the top of
+        //the search loop instead and let it re-propagate, re-notify and walk
+        //the assumptions again; CaDiCaL's Internal::ask_decision() does the
+        //same.
+        if (trail.size() != ext_trail_before
+            || decisionLevel() != ext_level_before
+            || !ext_pending_fixed.empty()
+        ) {
             return l_Undef;
         }
         if (next != lit_Undef) {
