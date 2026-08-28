@@ -94,10 +94,11 @@ namespace CMSat {
         //
         // See user_prop.h for the ExternalPropagator interface itself. At most
         // one propagator can be connected, and only to a single-threaded
-        // solver. While one is connected, Gauss-Jordan elimination and
-        // chronological backtracking are switched off, and every observed
-        // variable is frozen: it is never eliminated, replaced or renumbered
-        // away, so the propagator's view of it stays valid.
+        // solver. While one is connected, Gauss-Jordan elimination,
+        // chronological backtracking and symmetry breaking are switched off,
+        // and every observed variable is frozen: simplification never
+        // eliminates or replaces one, so the propagator's view of it stays
+        // valid.
         ////////////////////////////
 
         void connect_external_propagator(ExternalPropagator* p);
