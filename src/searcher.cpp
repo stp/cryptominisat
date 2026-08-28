@@ -2281,10 +2281,17 @@ bool Searcher::handle_conflict(PropBy confl)
     if (frat->enabled()) lrat.to_hints(chain);
 
     // check chrono backtrack condition
+    //
+    //IPASIR-UP: chronological backtracking leaves out-of-order assignments on
+    //the trail (cancelUntil() keeps every entry whose level is at or below the
+    //target). notify_backtrack() promises the propagator a plain stack pop, so
+    //while one is connected we always backtrack non-chronologically -- the same
+    //reason XORs, Gauss-Jordan and BNNs already switch it off here.
     if (conf.diff_declev_for_chrono > -1
         && xorclauses.empty()
         && gmatrices.empty()
         && bnns.empty()
+        && ext_prop == nullptr
         && (((int)decisionLevel() - (int)backtrack_level) >= conf.diff_declev_for_chrono)
     ) {
         chrono_backtrack++;
@@ -2292,11 +2299,15 @@ bool Searcher::handle_conflict(PropBy confl)
     } else {
         non_chrono_backtrack++;
         uint32_t bt_level = backtrack_level;
+        //IPASIR-UP: reusing the trail stops above backtrack_level, and the
+        //learnt clause then asserts its literal at backtrack_level -- the same
+        //out-of-order assignment as chronological backtracking.
         if (conf.do_chrono_reuse_trail
             && conf.diff_declev_for_chrono > -1
             && xorclauses.empty()
             && gmatrices.empty()
             && bnns.empty()
+            && ext_prop == nullptr
         ) {
             bt_level = chrono_reuse_trail_level(backtrack_level, data.nHighestLevel-1);
         }

@@ -38,6 +38,7 @@ inside is in INTER numbering.
 
 #include "constants.h"
 #include "searcher.h"
+#include "occsimplifier.h"
 #include "varreplacer.h"
 
 using namespace CMSat;
@@ -76,8 +77,42 @@ void Solver::add_observed_var(const uint32_t outer_var)
     const uint32_t inter_var = map_outer_to_inter(outer_var);
     if (varData[inter_var].observed) return;
 
+    //The variable must exist in the search for the propagator to be able to
+    //see it. Simplification may have removed it during an earlier solve().
+    if (varData[inter_var].removed == Removed::elimed) {
+        release_assert(decisionLevel() == 0 &&
+            "Cannot un-eliminate a variable during solving -- observe it before solve()");
+        release_assert(okay());
+        release_assert(occsimplifier != nullptr);
+        occsimplifier->uneliminate(inter_var);
+    }
+    if (varData[inter_var].removed == Removed::replaced) {
+        cout << "ERROR: variable " << outer_var+1 << " has been replaced by "
+            << varReplacer->get_lit_replaced_with_outer(Lit(outer_var, false))
+            << " and can no longer be observed. Observe it before the first"
+            " solve(), or call set_no_equivalent_lit_replacement()." << endl;
+        release_assert(false);
+    }
+    release_assert(varData[inter_var].removed == Removed::none);
+
     varData[inter_var].observed = 1;
     ext_observed_vars.push_back(outer_var);
+
+    //A variable that is already assigned cannot simply be announced: the
+    //propagator sees the trail as a stack, and this assignment sits below the
+    //top of it. Undo the assignment so that it is made -- and notified -- again
+    //in the normal way. Assignments fixed at level 0 are never undone, so those
+    //are handed over separately.
+    if (value(inter_var) != l_Undef) {
+        const uint32_t assigned_at = varData[inter_var].level;
+        if (assigned_at > 0) {
+            release_assert(assigned_at <= decisionLevel());
+            cancelUntil(assigned_at - 1);
+        } else {
+            cancelUntil(0);
+            ext_pending_fixed.push_back(Lit(outer_var, value(inter_var) == l_False));
+        }
+    }
     verb_print(6, "[user-prop] observing outer var " << outer_var+1);
 }
 
@@ -86,6 +121,13 @@ void Solver::remove_observed_var(const uint32_t outer_var)
     release_assert(outer_var < nVarsOuter());
     const uint32_t inter_var = map_outer_to_inter(outer_var);
     if (!varData[inter_var].observed) return;
+
+    //Only an unassigned variable can be un-observed: otherwise the implication
+    //graph may still hold an external propagation over it that we would no
+    //longer be able to explain.
+    if (value(inter_var) != l_Undef && varData[inter_var].level > 0) {
+        cancelUntil(varData[inter_var].level - 1);
+    }
 
     varData[inter_var].observed = 0;
     ext_observed_vars.erase(
@@ -100,6 +142,7 @@ void Solver::reset_observed_vars()
         varData[map_outer_to_inter(outer_var)].observed = 0;
     }
     ext_observed_vars.clear();
+    ext_pending_fixed.clear();
 }
 
 bool Solver::is_observed_var(const uint32_t outer_var) const
