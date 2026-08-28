@@ -138,7 +138,9 @@ namespace CMSat {
 
         // Force the solver to backtrack. Only legal from inside cb_decide() or
         // cb_check_found_model(); ignored otherwise, or if new_level is not
-        // below the current decision level.
+        // below the current decision level. It takes effect once the callback
+        // returns; a decision returned by the same cb_decide() call is then
+        // made on the backtracked trail (see ExternalPropagator::cb_decide).
         void force_backtrack(uint32_t new_level);
 
         // Force the branching polarity of a variable, or hand it back to the
