@@ -1041,6 +1041,29 @@ TEST_F(UserPropNotifyTest, observing_a_fixed_variable_after_a_solve)
     EXPECT_GT(p.num_comparisons, 0U);
 }
 
+TEST_F(UserPropNotifyTest, opening_a_level_hands_over_what_is_still_owed)
+{
+    // A level opened while the propagator is still owed assignments would put
+    // those assignments on the wrong level of its stack. Opening a level must
+    // hand them over first, whoever opens it and whether or not the caller
+    // remembered to.
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&p);
+    s->new_vars(4);
+    for(uint32_t v = 0; v < 4; v++) s->add_observed_var(v);
+    p.start(s, 4);
+    // a root assignment nobody has told the propagator about yet
+    s->add_clause_outside(str_to_cl("1"));
+    ASSERT_TRUE(p.stack[0].empty());
+
+    s->new_decision_level();
+    ASSERT_EQ(p.stack.size(), 2U);
+    EXPECT_EQ(p.stack[0], vector<Lit>{Lit(0, false)});
+    // ...so the mirror was able to check itself when the level opened
+    EXPECT_EQ(p.num_comparisons, 1U);
+    s->cancelUntil(0);
+}
+
 TEST_F(UserPropNotifyTest, no_notifications_from_inprocessing)
 {
     // Everything observed, heavy simplification: any assignment leaking out of

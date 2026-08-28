@@ -1486,6 +1486,14 @@ lbool Searcher::new_decision() {
         || value(next) != l_Undef
         || !ext_pending_fixed.empty()
     ) {
+        //If the callback backtracked from inside the notification that opens
+        //the level, the level itself was opened on top of the backtracked
+        //trail and is empty. Close it again rather than leave a level with no
+        //decision behind, so that the search loop re-decides from a clean
+        //state.
+        if (decisionLevel() > 0 && trail_lim.back() == trail.size()) {
+            cancelUntil(decisionLevel() - 1);
+        }
         return l_Undef;
     }
     enqueue<inprocess>(next);

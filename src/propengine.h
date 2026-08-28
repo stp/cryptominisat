@@ -411,13 +411,14 @@ private:
 
 inline void PropEngine::new_decision_level()
 {
+    //IPASIR-UP: the propagator sees the trail as a stack, so it must know
+    //about everything below this point before the level is opened. Hand it
+    //over here rather than rely on every caller having done so -- an
+    //assignment notified after the level opens would be popped with the
+    //wrong level. CaDiCaL's notify_decision() flushes the same way.
+    if (ext_prop != nullptr) notify_assignments();
     trail_lim.push_back(trail.size());
-    if (ext_notify_active()) {
-        //The propagator sees the trail as a stack, so it must know about
-        //everything below this point before the level is opened.
-        assert(ext_notified == trail.size());
-        ext_prop->notify_new_decision_level();
-    }
+    if (ext_notify_active()) ext_prop->notify_new_decision_level();
     #ifdef VERBOSE_DEBUG
     cout << "New decision level: " << trail_lim.size() << endl;
     #endif
