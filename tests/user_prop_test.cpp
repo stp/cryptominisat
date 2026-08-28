@@ -1166,6 +1166,103 @@ TEST_F(UserPropClauseTest, propagator_forces_a_specific_model)
     }
 }
 
+// Drives the search down a known chain of decisions, then hands over one clause
+// at a chosen depth and records what the trail did in response.
+class DeepHandoverPropagator : public MirrorPropagator
+{
+public:
+    uint32_t chain = 0;              // decide var 0..chain-1 true, one per level
+    uint32_t hand_over_at = 0;       // ...and give the clause at this level
+    vector<Lit> clause;              // OUTER numbering
+    size_t next_lit = 0;
+    bool handed = false;
+    uint32_t backtracks_at_handover = 0;
+    uint32_t level_at_handover = 0;
+    uint32_t backtracks_after = 0;
+    uint32_t level_after = 0;
+    bool saw_after = false;
+
+    Lit cb_decide() override {
+        // The clause is handed over between two decisions, so the first
+        // cb_decide() after it tells us what the hand-over did to the trail.
+        if (handed && !saw_after) {
+            saw_after = true;
+            backtracks_after = num_backtracks;
+            level_after = stack.size()-1;
+        }
+        for(uint32_t v = 0; v < chain; v++) {
+            if (val(Lit(v, false)) == l_Undef) return Lit(v, false);
+        }
+        return lit_Undef;
+    }
+
+    bool cb_has_external_clause(bool& is_forgettable) override {
+        is_forgettable = false;
+        if (handed || stack.size()-1 < hand_over_at) return false;
+        backtracks_at_handover = num_backtracks;
+        level_at_handover = stack.size()-1;
+        return true;
+    }
+
+    Lit cb_add_external_clause_lit() override {
+        if (next_lit == clause.size()) { next_lit = 0; handed = true; return lit_Undef; }
+        return clause[next_lit++];
+    }
+};
+
+TEST_F(UserPropClauseTest, a_satisfied_clause_does_not_move_the_trail)
+{
+    // Decisions put var v on level v+1, all true. The clause is satisfied by
+    // var 1 on level 1, and falsified elsewhere on levels 2 and 3 -- so the
+    // literal that satisfies it can never be undone while the clause is still
+    // watched on a falsified literal. There is nothing to repair, and the
+    // solver must not throw away levels 4..6 to find that out.
+    DeepHandoverPropagator dp;
+    dp.chain = 6;
+    dp.hand_over_at = 6;
+    dp.clause = str_to_cl("1, -3, -2");
+
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&dp);
+    s->new_vars(12);
+    for(uint32_t v = 0; v < 12; v++) s->add_observed_var(v);
+    dp.start(s, 12);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    ASSERT_EQ(s->solve_with_assumptions(), l_True);
+    ASSERT_TRUE(dp.handed);
+    ASSERT_TRUE(dp.saw_after);
+    EXPECT_EQ(dp.level_at_handover, 6U);
+    EXPECT_EQ(dp.level_after, dp.level_at_handover);
+    EXPECT_EQ(dp.backtracks_after, dp.backtracks_at_handover);
+}
+
+TEST_F(UserPropClauseTest, a_clause_that_should_have_propagated_lower_backtracks)
+{
+    // The other side of the same coin: the clause is satisfied only by var 6 on
+    // level 6, above both of its falsified literals. Backtracking to level 3 is
+    // what re-derives var 6 on the level it actually belongs to, and keeps the
+    // clause propagating rather than silently unit.
+    DeepHandoverPropagator dp;
+    dp.chain = 6;
+    dp.hand_over_at = 6;
+    dp.clause = str_to_cl("6, -3, -2");
+
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&dp);
+    s->new_vars(12);
+    for(uint32_t v = 0; v < 12; v++) s->add_observed_var(v);
+    dp.start(s, 12);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    ASSERT_EQ(s->solve_with_assumptions(), l_True);
+    ASSERT_TRUE(dp.handed);
+    ASSERT_TRUE(dp.saw_after);
+    EXPECT_EQ(dp.level_at_handover, 6U);
+    EXPECT_EQ(dp.level_after, 3U);
+    EXPECT_EQ(dp.backtracks_after, dp.backtracks_at_handover + 1);
+}
+
 }
 
 ////////////////////////////

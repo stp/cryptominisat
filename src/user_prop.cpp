@@ -263,15 +263,34 @@ void Solver::ext_unphase(const uint32_t outer_var)
 // once the two watch literals are picked, backtracking to the level of the
 // second watch puts the clause in exactly one of three states -- satisfied,
 // propagating, or conflicting -- and leaves the watch invariant intact.
+//
+// The one case that needs no backtrack at all is a clause already satisfied by
+// its first watch at or below the level of its second: the first watch cannot
+// be undone while the second is still falsified, so the clause stays satisfied.
+// Picking the *lowest*-level satisfied literal as the first watch is what makes
+// that case common rather than accidental.
+//
+// The remaining case -- a single satisfied literal above every falsified one --
+// is the one CaDiCaL leaves alone, accepting that the clause may silently
+// become unit once the satisfied literal is backtracked over. We backtrack
+// instead, which costs search but keeps unit propagation complete and re-derives
+// the literal on the level it actually belongs to.
 ////////////////////////////
 
 namespace {
 //Watch quality of a literal, higher is better: a satisfied clause is easiest,
 //then a literal that is still free, and finally falsified ones -- of which the
 //one falsified last (highest level) is the best watch.
+//
+//Among satisfied literals the one satisfied *first* (lowest level) is the best
+//watch, because it is the one that survives backtracking longest: a satisfied
+//first watch whose level is at or below the second watch's cannot be undone
+//while the second watch is still falsified, so the clause stays satisfied and
+//there is nothing to repair. CaDiCaL's move_literals_to_watch() orders them
+//the same way, and for the same reason.
 inline uint64_t ext_watch_rank(const lbool val, const uint32_t level)
 {
-    if (val == l_True)  return (3ULL << 32);
+    if (val == l_True)  return (3ULL << 32) | (numeric_limits<uint32_t>::max() - level);
     if (val == l_Undef) return (2ULL << 32);
     return (1ULL << 32) | level;
 }
@@ -425,7 +444,16 @@ PropBy Searcher::add_external_clause(const bool forgettable_in, const Lit reason
                ext_watch_rank(value(b), varData[b.var()].level);
     });
 
-    if (value(ext_cl[1]) == l_False) {
+    //A clause satisfied by its first watch no later than its second is falsified
+    //is already in a state the watch invariant can express, whatever the current
+    //decision level is: backtracking cannot leave the first watch unassigned
+    //while the second is still falsified. Nothing to repair.
+    const bool safely_satisfied =
+        value(ext_cl[0]) == l_True
+        && (value(ext_cl[1]) != l_False
+            || varData[ext_cl[0].var()].level <= varData[ext_cl[1].var()].level);
+
+    if (!safely_satisfied && value(ext_cl[1]) == l_False) {
         //Every literal but the first is falsified, the last of them on level
         //'blevel'. Undoing everything above it makes the clause propagate on
         //the level where it should have propagated all along.
@@ -457,8 +485,10 @@ PropBy Searcher::add_external_clause(const bool forgettable_in, const Lit reason
         frat_func_end();
         return by;
     }
-    //Satisfied by its first literal, which after the backtrack above is
-    //assigned no later than the second one. Nothing to do.
+    //Satisfied by its first literal, which is assigned no later than the second
+    //one -- either by the choice of watches, or by the backtrack above. Nothing
+    //to do.
+    assert(varData[ext_cl[0].var()].level <= varData[ext_cl[1].var()].level);
     frat_func_end();
     return PropBy();
 }
