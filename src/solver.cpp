@@ -3144,9 +3144,18 @@ bool Solver::find_and_init_all_matrices() {
     //stack-like trail view of the external propagator cannot express. Plain
     //XOR propagation is in-order and stays enabled.
     if (ext_prop != nullptr) {
-        if (!clear_gauss_matrices(false)) return false;
-        verb_print(1, "[find&init matx] external propagator connected -> no matrices");
-        xorclauses_updated = false;
+        //Only actually tear anything down if a propagator was connected after
+        //the matrices were built: clear_gauss_matrices() re-attaches the XOR
+        //clauses and cleans the database, which is not free, and this runs once
+        //per iteration of the solving loop.
+        //
+        //xorclauses_updated is left alone on purpose. Setting it to false says
+        //the matrices are up to date with the XORs, and would keep them from
+        //ever being built again if the propagator is disconnected later.
+        if (!gmatrices.empty()) {
+            if (!clear_gauss_matrices(false)) return false;
+            verb_print(1, "[find&init matx] external propagator connected -> no matrices");
+        }
         frat_func_end();
         return true;
     }

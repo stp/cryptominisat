@@ -751,6 +751,29 @@ TEST_F(UserPropFreezeTest, no_gauss_jordan_matrices_with_propagator)
     EXPECT_TRUE(s->gmatrices.empty());
 }
 
+TEST_F(UserPropFreezeTest, matrices_come_back_after_disconnecting)
+{
+    // Switching matrices off must not be permanent: once the propagator is
+    // gone there is nothing stopping Gauss-Jordan any more.
+    NoopPropagator p;
+    s = new Solver(&conf, &must_inter);
+    s->conf.doFindXors = true;
+    s->connect_external_propagator(&p);
+    s->new_vars(30);
+    for(uint32_t i = 0; i + 3 < 24; i += 2) {
+        vector<uint32_t> vars = {i, i+1, i+2, i+3};
+        s->add_xor_clause_outside(vars, (i/2) % 2 == 0);
+    }
+    must_inter.store(false, std::memory_order_relaxed);
+    s->solve_with_assumptions();
+    ASSERT_TRUE(s->gmatrices.empty());
+
+    s->disconnect_external_propagator();
+    must_inter.store(false, std::memory_order_relaxed);
+    s->solve_with_assumptions();
+    EXPECT_FALSE(s->gmatrices.empty()) << "Gauss-Jordan never came back";
+}
+
 }
 
 ////////////////////////////
