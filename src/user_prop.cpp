@@ -83,7 +83,22 @@ void Solver::add_observed_var(const uint32_t outer_var)
     release_assert(outer_var < nVarsOuter() &&
         "Cannot observe a variable that does not exist yet -- call new_vars() first");
 
+    //Renumbering may have moved the variable out of the range the search works
+    //on -- Solver::save_on_var_memory() shrinks nVars() past everything that is
+    //eliminated, replaced or fixed. Put it back, the same way
+    //add_clause_helper() does when a clause mentions such a variable again.
+    if (map_outer_to_inter(outer_var) >= nVars()) {
+        release_assert(okay());
+        cancelUntil(0);
+        //An eliminated variable is put back into the branching heap by
+        //uneliminate() below, so do not insert it twice.
+        const bool insert_varorder =
+            varData[map_outer_to_inter(outer_var)].removed == Removed::none;
+        new_var(false, outer_var, insert_varorder);
+    }
+
     const uint32_t inter_var = map_outer_to_inter(outer_var);
+    release_assert(inter_var < nVars());
     if (varData[inter_var].observed) return;
 
     //The variable must exist in the search for the propagator to be able to
@@ -119,7 +134,17 @@ void Solver::add_observed_var(const uint32_t outer_var)
             cancelUntil(assigned_at - 1);
         } else {
             cancelUntil(0);
-            ext_pending_fixed.push_back(Lit(outer_var, value(inter_var) == l_False));
+            //Fixed at the root, so it is never undone. If its trail entry is
+            //still ahead of the notification cursor the normal pass will pick
+            //it up; otherwise -- already passed over, or wiped by renumbering
+            //-- it has to be handed over separately.
+            const uint32_t sub = varData[inter_var].sublevel;
+            const bool cursor_covers_it =
+                sub >= ext_notified && sub < trail.size() &&
+                trail[sub].lit.var() == inter_var;
+            if (!cursor_covers_it) {
+                ext_pending_fixed.push_back(Lit(outer_var, value(inter_var) == l_False));
+            }
         }
     }
     verb_print(6, "[user-prop] observing outer var " << outer_var+1);
@@ -506,4 +531,106 @@ PropBy Searcher::external_propagate()
         }
     }
     return confl;
+}
+
+////////////////////////////
+// Decisions and solution analysis
+////////////////////////////
+
+void Searcher::apply_ext_forced_backtrack()
+{
+    assert(ext_forced_backtrack_set);
+    ext_forced_backtrack_set = false;
+    if (ext_forced_backtrack_level < decisionLevel()) {
+        verb_print(6, "[user-prop] forced backtrack to level " << ext_forced_backtrack_level);
+        cancelUntil(ext_forced_backtrack_level);
+    }
+}
+
+/**
+Algorithm 4 of the paper. Only reached once every assumption is satisfied --
+the caller has already walked the assumption stack -- so the propagator can
+never be asked to decide while an assumption is still open.
+*/
+Lit Searcher::ext_decide()
+{
+    assert(ext_prop != nullptr);
+    if (ext_prop->is_lazy || ext_prop_private_steps) return lit_Undef;
+
+    notify_assignments();
+    ext_forced_backtrack_allowed = true;
+    const Lit elit = ext_prop->cb_decide();
+    ext_forced_backtrack_allowed = false;
+    if (elit == lit_Undef) return lit_Undef;
+
+    release_assert(elit.var() < nVarsOuter() &&
+        "external decision over a variable that does not exist");
+    const Lit ilit = map_outer_to_inter(elit);
+    release_assert(varData[ilit.var()].observed &&
+        "external decisions are only allowed over observed variables");
+
+    //An already assigned literal is no decision at all; fall back on the
+    //solver's own heuristic.
+    if (value(ilit) != l_Undef) return lit_Undef;
+    return ilit;
+}
+
+/**
+Solution analysis: a complete assignment has been found, and the propagator gets
+to say whether it is consistent with whatever it knows.
+
+If it is not, the propagator is expected to hand over clauses, or to have forced
+a backtrack. Rejecting a model without doing either leaves nothing to act on, so
+it is taken as acceptance -- the same way CaDiCaL treats it.
+*/
+lbool Searcher::external_check_solution()
+{
+    assert(ext_prop != nullptr);
+    if (ext_prop_private_steps) return l_True;
+
+    notify_assignments();
+
+    //One literal per observed variable, in the order they were observed.
+    ext_model.clear();
+    for(const uint32_t outer_var: ext_observed_vars) {
+        const uint32_t v = map_outer_to_inter(outer_var);
+        release_assert(value(v) != l_Undef &&
+            "an observed variable is unassigned in a complete assignment");
+        ext_model.push_back(Lit(outer_var, value(v) == l_False));
+    }
+
+    ext_forced_backtrack_allowed = true;
+    const bool consistent = ext_prop->cb_check_found_model(ext_model);
+    ext_forced_backtrack_allowed = false;
+
+    if (ext_forced_backtrack_set) {
+        apply_ext_forced_backtrack();
+        return l_Undef;
+    }
+    if (consistent) return l_True;
+
+    //Rejected: take whatever the propagator has to say about it.
+    bool any_clause = false;
+    bool forgettable = false;
+    while (ext_prop->cb_has_external_clause(forgettable)) {
+        any_clause = true;
+        ext_confl = add_external_clause(forgettable);
+        forgettable = false;
+        if (!okay()) return l_False;
+        if (!ext_confl.isnullptr()) return l_Undef;
+
+        if (qhead != trail.size()) {
+            ext_confl = propagate<false>();
+            if (!ext_confl.isnullptr()) return l_Undef;
+        }
+        notify_assignments();
+    }
+
+    if (!any_clause) {
+        verb_print(2, "[user-prop] the model was rejected but nothing was added,"
+            " treating it as accepted");
+        return l_True;
+    }
+    //The assignment is very likely no longer complete: back to the search.
+    return l_Undef;
 }

@@ -188,6 +188,10 @@ public:
     vector<Lit> ext_notify_lits; ///< scratch buffer for one notification batch
     vector<Lit> ext_cl;          ///< scratch: an external clause, INTER numbering
     vector<Lit> ext_cl_outer;    ///< scratch: the same clause as the user gave it
+    vector<Lit> ext_model;       ///< scratch: the model handed to cb_check_found_model
+    /// A conflict found while checking a complete assignment, waiting for the
+    /// search loop to pick it up.
+    PropBy ext_confl;
     /// force_backtrack() is only honoured from inside cb_decide() and
     /// cb_check_found_model(); the request is recorded here and acted on once
     /// the callback has returned.

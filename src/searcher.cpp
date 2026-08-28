@@ -1252,10 +1252,13 @@ lbool Searcher::search()
     PropBy confl;
     lbool search_ret = l_Undef;
 
+    ext_confl = PropBy();
     while (!params.must_stop
         || !confl.isnullptr() //always finish the last conflict
     ) {
-        confl = PropBy();
+        //IPASIR-UP: a conflict found while checking a complete assignment
+        confl = ext_confl;
+        ext_confl = PropBy();
         if (!solver->okay()) {
             assert(!frat->enabled() || unsat_cl_ID != 0);
             search_ret = l_False;
@@ -1370,13 +1373,34 @@ lbool Searcher::new_decision() {
         }
     }
 
+    if (next == lit_Undef && ext_prop != nullptr) {
+        //IPASIR-UP: every assumption is satisfied by now, so the propagator is
+        //allowed to have its say on the next decision (Algorithm 4).
+        next = ext_decide();
+        if (ext_forced_backtrack_set) {
+            apply_ext_forced_backtrack();
+            return l_Undef;
+        }
+        if (next != lit_Undef) {
+            stats.decisions++;
+            sumDecisions++;
+        }
+    }
+
     if (next == lit_Undef) {
         // New variable decision:
         next = pickBranchLit();
 
         //No decision taken, because it's SAT
-        if (next == lit_Undef)
+        if (next == lit_Undef) {
+            //IPASIR-UP: the propagator has to approve the assignment before it
+            //can be called a solution.
+            if (ext_prop != nullptr) {
+                const lbool ext_ret = external_check_solution();
+                if (ext_ret != l_True) return ext_ret;
+            }
             return l_True;
+        }
 
         //Update stats
         stats.decisions++;

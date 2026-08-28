@@ -137,6 +137,14 @@ class Searcher : public HyperEngine
         /// unit propagation has reached a fixed point. Returns a conflicting
         /// PropBy, or a null one.
         PropBy external_propagate();
+        /// Ask the propagator for a decision (Algorithm 4). Returns the literal
+        /// in INTER numbering, or lit_Undef to let the solver choose.
+        Lit ext_decide();
+        /// Ask the propagator to approve a complete assignment. Returns l_True
+        /// if it does, l_Undef if the search must continue, l_False for UNSAT.
+        /// A conflict found on the way is left in ext_confl.
+        lbool external_check_solution();
+        void apply_ext_forced_backtrack();
         PropBy ext_attach_clause(const int32_t ID, const bool red);
 
         //ChronoBT

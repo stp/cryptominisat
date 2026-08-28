@@ -219,6 +219,90 @@ public:
     }
 };
 
+// Overrides the solver's branching completely: always decides the lowest
+// unassigned observed variable, with a fixed polarity.
+class DecidingPropagator : public MirrorPropagator
+{
+public:
+    uint32_t nvars = 0;
+    bool sign = false;
+    uint32_t num_decisions = 0;
+    bool check_is_decision = false;
+
+    Lit cb_decide() override {
+        for(uint32_t v = 0; v < nvars; v++) {
+            if (val(Lit(v, false)) != l_Undef) continue;
+            num_decisions++;
+            return Lit(v, sign);
+        }
+        return lit_Undef;
+    }
+
+    bool cb_check_found_model(const vector<Lit>& model) override {
+        compare();
+        if (check_is_decision) {
+            // Every literal we decided is reported as a decision; propagated
+            // ones are not.
+            for(const Lit l: model) {
+                if (s->ext_is_decision(l)) EXPECT_EQ(l.sign(), sign);
+            }
+        }
+        return true;
+    }
+};
+
+// Enumerates models: rejects each complete assignment and blocks it with its
+// own negation, until the problem becomes unsatisfiable.
+class EnumeratingPropagator : public MirrorPropagator
+{
+public:
+    vector<vector<Lit>> models;      // one literal per observed var
+    vector<vector<Lit>> blocking;
+    size_t next_clause = 0;
+    size_t next_lit = 0;
+
+    bool cb_check_found_model(const vector<Lit>& model) override {
+        compare();
+        models.push_back(model);
+        vector<Lit> block;
+        block.reserve(model.size());
+        for(const Lit l: model) block.push_back(~l);
+        blocking.push_back(block);
+        return false;
+    }
+
+    bool cb_has_external_clause(bool& is_forgettable) override {
+        is_forgettable = false;
+        return next_clause < blocking.size();
+    }
+
+    Lit cb_add_external_clause_lit() override {
+        const vector<Lit>& cl = blocking[next_clause];
+        if (next_lit == cl.size()) { next_lit = 0; next_clause++; return lit_Undef; }
+        return cl[next_lit++];
+    }
+};
+
+// Forces the solver back to the root every time the trail gets deep, a fixed
+// number of times, and then gets out of the way.
+class BacktrackingPropagator : public MirrorPropagator
+{
+public:
+    SATSolver* api = nullptr;
+    Solver* raw = nullptr;
+    uint32_t budget = 0;
+    uint32_t num_forced = 0;
+
+    Lit cb_decide() override {
+        if (budget > 0 && stack.size() > 4) {
+            budget--;
+            num_forced++;
+            raw->ext_force_backtrack(1);
+        }
+        return lit_Undef;
+    }
+};
+
 }
 
 TEST(user_prop_connect, connect_and_disconnect)
@@ -576,6 +660,47 @@ TEST_F(UserPropNotifyTest, mirror_survives_incremental_solving)
     must_inter.store(false, std::memory_order_relaxed);
     EXPECT_EQ(s->solve_with_assumptions(), l_True);
     EXPECT_GT(p.num_comparisons, after_first);
+}
+
+TEST_F(UserPropNotifyTest, observing_an_already_fixed_variable)
+{
+    // The units are on the trail before the variables become observed, so the
+    // notification cursor has to hand them over exactly once.
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&p);
+    s->new_vars(8);
+    s->add_clause_outside(str_to_cl("1"));
+    s->add_clause_outside(str_to_cl("-2"));
+    s->add_clause_outside(str_to_cl("3, 4"));
+    for(uint32_t v = 0; v < 8; v++) s->add_observed_var(v);
+    p.start(s, 8);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_EQ(s->solve_with_assumptions(), l_True);
+    EXPECT_GT(p.num_comparisons, 0U);
+}
+
+TEST_F(UserPropNotifyTest, observing_a_fixed_variable_after_a_solve)
+{
+    // By now renumbering has wiped the literals of the level-0 trail, so the
+    // cursor cannot see this assignment at all and it has to be handed over
+    // separately.
+    s = new Solver(&conf, &must_inter);
+    s->conf.simplify_at_startup = true;
+    s->conf.full_simplify_at_startup = true;
+    s->connect_external_propagator(&p);
+    add_random_3sat(s, 60, 150, 3);
+    s->add_clause_outside(str_to_cl("1"));
+    p.start(s, 60);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    ASSERT_EQ(s->solve_with_assumptions(), l_True);
+
+    s->add_observed_var(0);
+    for(uint32_t v = 1; v < 60; v += 3) s->add_observed_var(v);
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_EQ(s->solve_with_assumptions(), l_True);
+    EXPECT_GT(p.num_comparisons, 0U);
 }
 
 TEST_F(UserPropNotifyTest, no_notifications_from_inprocessing)
@@ -954,6 +1079,170 @@ TEST_F(UserPropPropagateTest, lazy_propagator_is_never_asked)
     p.is_lazy = true;
     solve_with_theory(cls, nvars, cls.size());   // nothing left for the theory
     EXPECT_EQ(p.num_propagations, 0U);
+}
+
+}
+
+////////////////////////////
+// WP5: decisions, forced backtracking and solution analysis
+////////////////////////////
+
+namespace CMSat {
+
+// Brute-force model count over 'nvars' variables.
+static uint32_t count_models(const vector<vector<Lit>>& cls, uint32_t nvars)
+{
+    uint32_t count = 0;
+    for(uint32_t mask = 0; mask < (1U << nvars); mask++) {
+        bool all_sat = true;
+        for(const auto& cl: cls) {
+            bool sat = false;
+            for(const Lit l: cl) {
+                const bool v = (mask >> l.var()) & 1;
+                if (v != l.sign()) { sat = true; break; }
+            }
+            if (!sat) { all_sat = false; break; }
+        }
+        if (all_sat) count++;
+    }
+    return count;
+}
+
+struct UserPropDecideTest : public ::testing::Test {
+    UserPropDecideTest() { must_inter.store(false, std::memory_order_relaxed); }
+    ~UserPropDecideTest() { delete s; }
+
+    SolverConf conf;
+    Solver* s = nullptr;
+    std::atomic<bool> must_inter;
+};
+
+TEST_F(UserPropDecideTest, cb_decide_drives_the_search)
+{
+    for(int sign = 0; sign < 2; sign++) {
+        DecidingPropagator p;
+        s = new Solver(&conf, &must_inter);
+        s->connect_external_propagator(&p);
+        s->new_vars(8);
+        for(uint32_t v = 0; v < 8; v++) s->add_observed_var(v);
+        p.nvars = 8;
+        p.sign = (sign == 1);
+        p.check_is_decision = true;
+        p.start(s, 8);
+
+        must_inter.store(false, std::memory_order_relaxed);
+        ASSERT_EQ(s->solve_with_assumptions(), l_True);
+        EXPECT_EQ(p.num_decisions, 8U);
+        for(uint32_t v = 0; v < 8; v++) {
+            EXPECT_EQ(s->get_model()[v], sign == 1 ? l_False : l_True) << "var " << v+1;
+        }
+        delete s; s = nullptr;
+    }
+}
+
+TEST_F(UserPropDecideTest, cb_decide_is_ignored_for_assigned_literals)
+{
+    // The propagator keeps asking for variable 1, which unit propagation has
+    // already fixed; the solver must fall back on its own heuristic.
+    class Stubborn : public DecidingPropagator {
+    public:
+        Lit cb_decide() override { num_decisions++; return Lit(0, false); }
+    } p;
+
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&p);
+    s->new_vars(6);
+    s->add_clause_outside(str_to_cl("1"));
+    for(uint32_t v = 0; v < 6; v++) s->add_observed_var(v);
+    p.nvars = 6;
+    p.start(s, 6);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    ASSERT_EQ(s->solve_with_assumptions(), l_True);
+    EXPECT_GT(p.num_decisions, 0U);
+    EXPECT_EQ(s->get_model()[0], l_True);
+}
+
+TEST_F(UserPropDecideTest, model_enumeration_through_cb_check_found_model)
+{
+    const uint32_t nvars = 8;
+    auto cls = gen_3sat(nvars, 10, 21);
+    const uint32_t expected = count_models(cls, nvars);
+    ASSERT_GT(expected, 0U);
+
+    EnumeratingPropagator p;
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&p);
+    s->new_vars(nvars);
+    for(const auto& cl: cls) { vector<Lit> tmp = cl; s->add_clause_outside(tmp); }
+    for(uint32_t v = 0; v < nvars; v++) s->add_observed_var(v);
+    p.start(s, nvars);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    // Every model is rejected and blocked, so the search ends unsatisfiable.
+    EXPECT_EQ(s->solve_with_assumptions(), l_False);
+    EXPECT_EQ(p.models.size(), expected);
+
+    // and no model was enumerated twice
+    vector<vector<Lit>> seen = p.models;
+    std::sort(seen.begin(), seen.end());
+    EXPECT_EQ(std::unique(seen.begin(), seen.end()), seen.end());
+}
+
+TEST_F(UserPropDecideTest, rejecting_without_a_clause_is_taken_as_acceptance)
+{
+    class AlwaysNo : public MirrorPropagator {
+    public:
+        uint32_t num_rejections = 0;
+        bool cb_check_found_model(const vector<Lit>&) override {
+            num_rejections++;
+            return false;
+        }
+    } p;
+
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&p);
+    s->new_vars(5);
+    s->add_clause_outside(str_to_cl("1, 2"));
+    for(uint32_t v = 0; v < 5; v++) s->add_observed_var(v);
+    p.start(s, 5);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_EQ(s->solve_with_assumptions(), l_True);
+    EXPECT_EQ(p.num_rejections, 1U);
+}
+
+TEST_F(UserPropDecideTest, force_backtrack_from_cb_decide)
+{
+    BacktrackingPropagator p;
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&p);
+    s->new_vars(40);
+    auto cls = gen_3sat(40, 120, 13);
+    for(const auto& cl: cls) { vector<Lit> tmp = cl; s->add_clause_outside(tmp); }
+    for(uint32_t v = 0; v < 40; v++) s->add_observed_var(v);
+    p.raw = s;
+    p.budget = 25;
+    p.start(s, 40);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    const lbool ret = s->solve_with_assumptions();
+    EXPECT_NE(ret, l_Undef);
+    EXPECT_GT(p.num_forced, 0U);
+    EXPECT_GT(p.num_backtracks, 0U);
+}
+
+TEST_F(UserPropDecideTest, force_backtrack_is_ignored_outside_the_callbacks)
+{
+    NoopPropagator p;
+    SATSolver api;
+    api.new_vars(5);
+    api.add_clause(str_to_cl("1, 2"));
+    api.connect_external_propagator(&p);
+    api.add_observed_var(0);
+    // Not inside cb_decide()/cb_check_found_model(): must be a no-op, not a crash
+    api.force_backtrack(0);
+    EXPECT_EQ(api.solve(), l_True);
 }
 
 }
