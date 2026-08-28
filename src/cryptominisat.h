@@ -117,7 +117,11 @@ namespace CMSat {
         // one that is already assigned makes the solver backtrack over the
         // assignment, so that it is made -- and notified -- again in the normal
         // way: a callback that does this cannot assume the trail it was looking
-        // at is still there afterwards.
+        // at is still there afterwards. A variable that simplification has
+        // eliminated is put back into the problem, which during solve() means
+        // backtracking to the root. One that has been replaced by an
+        // equivalent literal cannot be observed any more: observe it before
+        // the first solve(), or call set_no_equivalent_lit_replacement().
         void add_observed_var(uint32_t var);
         // Only for a variable that is unassigned, or fixed at the root. Anything
         // else is backtracked over first, so that no propagation the solver
