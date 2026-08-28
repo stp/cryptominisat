@@ -181,11 +181,20 @@ public:
 class UnitPropagator : public MirrorPropagator
 {
 public:
-    vector<vector<Lit>> theory;   // OUTER numbering
-    size_t reason_idx = 0;        // clause that implied the last cb_propagate()
-    size_t reason_lit = 0;
-    Lit last_propagated = lit_Undef;
+    vector<vector<Lit>> theory;      // OUTER numbering
+    // The clause that implied each literal, recorded when the propagation is
+    // made rather than when it is asked about: with lazy reasons the question
+    // comes much later, during conflict analysis.
+    vector<size_t> reason_for_lit;   // indexed by Lit::toInt()
+    size_t cur_clause = 0;
+    size_t cur_lit = 0;
     size_t num_propagations = 0;
+    size_t num_explanations = 0;
+
+    void start_theory(Solver* _s, uint32_t nvars) {
+        start(_s, nvars);
+        reason_for_lit.assign(2*nvars, 0);
+    }
 
     Lit cb_propagate() override {
         for(size_t i = 0; i < theory.size(); i++) {
@@ -198,24 +207,26 @@ public:
                 if (v == l_Undef) { num_free++; implied = l; }
             }
             if (satisfied) continue;
-            // Unit, or already falsified: in the latter case hand back any
-            // literal of it -- the solver will see the clause is conflicting.
+            // Unit, or already falsified: in the latter case hand back one of
+            // its literals -- the solver will see the clause is conflicting.
             if (num_free == 1 || num_free == 0) {
-                reason_idx = i;
-                reason_lit = 0;
-                last_propagated = (num_free == 1) ? implied : theory[i][0];
+                const Lit ret = (num_free == 1) ? implied : theory[i][0];
+                reason_for_lit[ret.toInt()] = i;
                 num_propagations++;
-                return last_propagated;
+                return ret;
             }
         }
         return lit_Undef;
     }
 
     Lit cb_add_reason_clause_lit(Lit propagated_lit) override {
-        EXPECT_EQ(propagated_lit, last_propagated);
-        const vector<Lit>& cl = theory[reason_idx];
-        if (reason_lit == cl.size()) { reason_lit = 0; return lit_Undef; }
-        return cl[reason_lit++];
+        if (cur_lit == 0) {
+            cur_clause = reason_for_lit[propagated_lit.toInt()];
+            num_explanations++;
+        }
+        const vector<Lit>& cl = theory[cur_clause];
+        if (cur_lit == cl.size()) { cur_lit = 0; return lit_Undef; }
+        return cl[cur_lit++];
     }
 };
 
@@ -993,8 +1004,10 @@ struct UserPropPropagateTest : public ::testing::Test {
 
     // The first 'split' clauses go to the solver; the rest exist only inside
     // the propagator, which propagates over them and explains itself.
-    lbool solve_with_theory(const vector<vector<Lit>>& cls, uint32_t nvars, size_t split) {
+    lbool solve_with_theory(const vector<vector<Lit>>& cls, uint32_t nvars, size_t split,
+                            bool lazy_reasons = false) {
         delete s;
+        conf.ext_lazy_reasons = lazy_reasons;
         s = new Solver(&conf, &must_inter);
         s->connect_external_propagator(&p);
         s->new_vars(nvars);
@@ -1005,7 +1018,7 @@ struct UserPropPropagateTest : public ::testing::Test {
         for(uint32_t v = 0; v < nvars; v++) s->add_observed_var(v);
         p.theory.clear();
         for(size_t i = split; i < cls.size(); i++) p.theory.push_back(cls[i]);
-        p.start(s, nvars);
+        p.start_theory(s, nvars);
 
         must_inter.store(false, std::memory_order_relaxed);
         return s->solve_with_assumptions();
@@ -1243,6 +1256,118 @@ TEST_F(UserPropDecideTest, force_backtrack_is_ignored_outside_the_callbacks)
     // Not inside cb_decide()/cb_check_found_model(): must be a no-op, not a crash
     api.force_backtrack(0);
     EXPECT_EQ(api.solve(), l_True);
+}
+
+}
+
+////////////////////////////
+// WP6: lazy reason clauses
+////////////////////////////
+
+namespace CMSat {
+
+struct UserPropLazyTest : public UserPropPropagateTest {};
+
+TEST_F(UserPropLazyTest, lazy_and_eager_agree_over_many_seeds)
+{
+    size_t eager_explanations = 0;
+    size_t eager_propagations = 0;
+    size_t lazy_explanations = 0;
+    size_t lazy_propagations = 0;
+
+    for(uint32_t seed = 1; seed <= 15; seed++) {
+        const uint32_t nvars = 30;
+        auto cls = gen_3sat(nvars, 125, seed);
+        const lbool expected = solve_plain(cls, nvars);
+
+        for(int lazy = 0; lazy < 2; lazy++) {
+            p = UnitPropagator();
+            ASSERT_EQ(solve_with_theory(cls, nvars, cls.size()/2, lazy == 1), expected)
+                << "seed " << seed << " lazy " << lazy;
+            if (expected == l_True) {
+                EXPECT_TRUE(model_satisfies(s->get_model(), cls))
+                    << "seed " << seed << " lazy " << lazy;
+            }
+            // an explanation is only ever asked for once per propagation
+            EXPECT_LE(p.num_explanations, p.num_propagations);
+            if (lazy) {
+                lazy_explanations += p.num_explanations;
+                lazy_propagations += p.num_propagations;
+            } else {
+                // eagerly, every propagation is explained straight away
+                EXPECT_EQ(p.num_explanations, p.num_propagations);
+                eager_explanations += p.num_explanations;
+                eager_propagations += p.num_propagations;
+            }
+        }
+    }
+
+    EXPECT_GT(eager_explanations, 0U);
+    EXPECT_GT(lazy_propagations, 0U);
+    EXPECT_EQ(eager_explanations, eager_propagations);
+    // The whole point: most propagations never have to be explained at all.
+    EXPECT_LT(lazy_explanations, lazy_propagations);
+    EXPECT_LT((double)lazy_explanations/(double)lazy_propagations, 0.9);
+}
+
+TEST_F(UserPropLazyTest, lazy_reasons_are_actually_used_in_conflict_analysis)
+{
+    const uint32_t nvars = 25;
+    auto cls = gen_3sat(nvars, 100, 9);
+    const lbool expected = solve_plain(cls, nvars);
+    ASSERT_EQ(solve_with_theory(cls, nvars, 0, true), expected);
+    // Everything comes from the propagator, so conflict analysis cannot avoid
+    // asking for reasons.
+    EXPECT_GT(p.num_explanations, 0U);
+    EXPECT_LT(p.num_explanations, p.num_propagations);
+}
+
+TEST_F(UserPropLazyTest, lazy_is_ignored_under_frat)
+{
+    // Reason clauses have to be in the proof, so they are asked for eagerly.
+    const uint32_t nvars = 24;
+    auto cls = gen_3sat(nvars, 180, 5);
+    const lbool expected = solve_plain(cls, nvars);
+    ASSERT_EQ(expected, l_False);
+
+    const char* fname = "user_prop_test_lazy.frat";
+    FILE* f = fopen(fname, "wb");
+    ASSERT_NE(f, nullptr);
+
+    conf.ext_lazy_reasons = true;
+    delete s;
+    s = new Solver(&conf, &must_inter);
+    s->add_frat(f);
+    s->connect_external_propagator(&p);
+    s->new_vars(nvars);
+    for(size_t i = 0; i < 90; i++) {
+        vector<Lit> tmp = cls[i];
+        s->add_clause_outside(tmp);
+    }
+    for(uint32_t v = 0; v < nvars; v++) s->add_observed_var(v);
+    for(size_t i = 90; i < cls.size(); i++) p.theory.push_back(cls[i]);
+    p.start_theory(s, nvars);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_EQ(s->solve_with_assumptions(), l_False);
+    EXPECT_EQ(p.num_explanations, p.num_propagations);
+    delete s; s = nullptr;
+    fclose(f);
+    std::remove(fname);
+}
+
+TEST_F(UserPropLazyTest, lazy_with_the_whole_problem_in_the_propagator)
+{
+    for(uint32_t seed = 1; seed <= 8; seed++) {
+        const uint32_t nvars = 22;
+        auto cls = gen_3sat(nvars, 92, seed);
+        const lbool expected = solve_plain(cls, nvars);
+        p = UnitPropagator();
+        ASSERT_EQ(solve_with_theory(cls, nvars, 0, true), expected) << "seed " << seed;
+        if (expected == l_True) {
+            EXPECT_TRUE(model_satisfies(s->get_model(), cls)) << "seed " << seed;
+        }
+    }
 }
 
 }

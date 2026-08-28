@@ -73,6 +73,8 @@ void Solver::disconnect_external_propagator()
     reset_observed_vars();
     ext_prop = nullptr;
     ext_prop_private_steps = false;
+    ext_reasons.clear();
+    ext_reasons_empty_slots.clear();
     verb_print(1, "[user-prop] external propagator disconnected");
 }
 
@@ -486,19 +488,35 @@ PropBy Searcher::external_propagate()
             release_assert(varData[ilit.var()].observed &&
                 "external propagation is only allowed over observed variables");
 
-            //An already satisfied literal is simply ignored. Otherwise the
-            //reason clause both explains and performs the propagation: it
-            //propagates a free literal and conflicts on a falsified one.
+            //An already satisfied literal is simply ignored.
             if (value(ilit) != l_True) {
                 VERBOSE_PRINT("[user-prop] external propagation of " << ilit
                     << " (value " << value(ilit) << ")");
-                confl = add_external_clause(ext_prop->are_reasons_forgettable, elit);
-                if (!okay()) return PropBy();
-                if (!confl.isnullptr()) break;
 
-                release_assert(value(ilit) != l_Undef &&
-                    "the reason clause of an external propagation must imply it"
-                    " under the current trail");
+                //Lazily: assign it now and ask for the reason only if conflict
+                //analysis ever gets there. Not available at the root, where the
+                //assignment is permanent and would keep an unexplained reason
+                //around forever, nor with proof logging, where every step has
+                //to be written down.
+                const bool lazy = conf.ext_lazy_reasons
+                    && value(ilit) == l_Undef
+                    && decisionLevel() > 0
+                    && !frat->enabled();
+
+                if (lazy) {
+                    enqueue<false>(ilit, decisionLevel(), PropBy(ExtPropTag()));
+                } else {
+                    //Eagerly: the reason clause both explains and performs the
+                    //propagation -- it propagates a free literal and conflicts
+                    //on a falsified one.
+                    confl = add_external_clause(ext_prop->are_reasons_forgettable, elit);
+                    if (!okay()) return PropBy();
+                    if (!confl.isnullptr()) break;
+
+                    release_assert(value(ilit) != l_Undef &&
+                        "the reason clause of an external propagation must imply it"
+                        " under the current trail");
+                }
 
                 if (qhead != trail.size()) {
                     confl = propagate<false>();

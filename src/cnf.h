@@ -192,6 +192,11 @@ public:
     /// A conflict found while checking a complete assignment, waiting for the
     /// search loop to pick it up.
     PropBy ext_confl;
+    /// Reason clauses of external propagations, materialised on demand (see
+    /// PropEngine::get_ext_reason). Slots are handed back on backtracking, the
+    /// same way BNN reasons are.
+    vector<vector<Lit>> ext_reasons;
+    vector<uint32_t> ext_reasons_empty_slots;
     /// force_backtrack() is only honoured from inside cb_decide() and
     /// cb_check_found_model(); the request is recorded here and acted on once
     /// the callback has returned.

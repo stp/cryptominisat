@@ -223,6 +223,10 @@ public:
     void new_decision_level();
     void notify_assignments();
     vector<Lit>* get_xor_reason(const PropBy& reason, int32_t& ID);
+    /// IPASIR-UP: the reason clause of an external propagation of 'lit', asked
+    /// for from the propagator the first time conflict analysis needs it. The
+    /// propagated literal is always first.
+    vector<Lit>* get_ext_reason(const Lit lit);
 
     /////////////////////
     // Branching

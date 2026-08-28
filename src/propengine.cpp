@@ -445,6 +445,60 @@ void PropEngine::notify_assignments()
     }
 }
 
+/**
+IPASIR-UP: the reason clause of an external propagation, asked for only when
+conflict analysis actually needs it (JAIR 81, section 2.3, "delayed lazy
+explanation"). Once materialised it is cached in a slot that is handed back
+when the propagation is undone, exactly as BNN reasons are.
+
+Note that the propagator's view of the trail may be behind the solver's here:
+conflict analysis does not notify. The reason handed back must therefore be the
+one that was valid when the literal was propagated, which is what a propagator
+that records its reasons at propagation time gives anyway.
+*/
+vector<Lit>* PropEngine::get_ext_reason(const Lit lit)
+{
+    assert(ext_prop != nullptr);
+    auto& reason = varData[lit.var()].reason;
+    assert(reason.isExt());
+    if (reason.ext_reason_set()) return &ext_reasons[reason.get_ext_reason()];
+
+    uint32_t slot;
+    if (ext_reasons_empty_slots.empty()) {
+        ext_reasons.push_back(vector<Lit>());
+        slot = ext_reasons.size()-1;
+    } else {
+        slot = ext_reasons_empty_slots.back();
+        ext_reasons_empty_slots.pop_back();
+    }
+    reason.set_ext_reason(slot);
+    vector<Lit>* ret = &ext_reasons[slot];
+    ret->clear();
+
+    const Lit elit = map_inter_to_outer(lit);
+    Lit l = ext_prop->cb_add_reason_clause_lit(elit);
+    while (l != lit_Undef) {
+        release_assert(l.var() < nVarsOuter() &&
+            "external reason clause over a variable that does not exist");
+        const Lit inter = map_outer_to_inter(l);
+        release_assert(varData[inter.var()].observed &&
+            "external reason clauses must only mention observed variables");
+        ret->push_back(inter);
+        l = ext_prop->cb_add_reason_clause_lit(elit);
+    }
+
+    //Conflict analysis reads the propagated literal off the front.
+    bool found = false;
+    for(size_t i = 0; i < ret->size(); i++) {
+        if ((*ret)[i] == lit) { std::swap((*ret)[0], (*ret)[i]); found = true; break; }
+    }
+    release_assert(found &&
+        "the reason clause of an external propagation must contain the propagated literal");
+
+    VERBOSE_PRINT("[user-prop] explained " << lit << " with " << *ret);
+    return ret;
+}
+
 vector<Lit>* PropEngine::get_bnn_reason(BNN* bnn, Lit lit)
 {
 //     cout << "Getting BNN reason, lit: " << lit << " bnn: " << *bnn << endl;

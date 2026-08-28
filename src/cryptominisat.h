@@ -124,6 +124,13 @@ namespace CMSat {
         void phase(Lit lit);
         void unphase(uint32_t var);
 
+        // Explain external propagations lazily: ask for the reason clause only
+        // when conflict analysis needs it, instead of straight away. Avoids
+        // learning reason clauses that are never used, but the reasons are then
+        // not part of the clause database and cannot appear in a FRAT proof, so
+        // this is ignored while proof logging is on. Off by default.
+        void set_lazy_external_reasons(bool lazy);
+
         ////////////////////////////
         // Debug all calls for later replay with --debuglit FILENAME
         ////////////////////////////
