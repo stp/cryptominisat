@@ -102,6 +102,12 @@ public:
 
     /// The next decision literal, or lit_Undef to let the solver decide.
     /// A literal that is already assigned is ignored.
+    ///
+    /// This is also the place to call SATSolver::force_backtrack(). The solver
+    /// backtracks first and then makes the decision returned here, provided
+    /// the literal is unassigned on the backtracked trail and every assumption
+    /// is still on it; otherwise the decision is dropped, and cb_decide() is
+    /// asked again from the new state.
     virtual Lit cb_decide() { return lit_Undef; }
 
     /// A literal implied by external knowledge under the current trail, or

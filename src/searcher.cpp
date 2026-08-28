@@ -1427,24 +1427,30 @@ lbool Searcher::new_decision() {
         const size_t ext_trail_before = trail.size();
         const uint32_t ext_level_before = decisionLevel();
         next = ext_decide();
-        if (ext_forced_backtrack_set) {
-            apply_ext_forced_backtrack();
-            return l_Undef;
-        }
-        //cb_decide() is allowed to observe and un-observe variables, and both
-        //backtrack when the variable is assigned. Deciding on top of what is
-        //left would put a decision of ours where an assumption belongs -- the
-        //loop above indexes assumptions[] by decision level, so an assumption
-        //would be skipped altogether -- and would open a decision level with a
-        //root assignment still waiting to be handed over. Go back to the top of
-        //the search loop instead and let it re-propagate, re-notify and walk
-        //the assumptions again; CaDiCaL's Internal::ask_decision() does the
-        //same.
+        //cb_decide() may force a backtrack, and is allowed to observe and
+        //un-observe variables, which backtrack too when the variable is
+        //assigned. Once the trail has moved, deciding on top of what is left
+        //is only right if every assumption is still there -- the loop above
+        //indexes assumptions[] by decision level, so a decision of ours in an
+        //assumption's place would skip that assumption altogether -- and if
+        //no root assignment is waiting to be handed over. Then a decision
+        //handed over together with the backtrack is made on the backtracked
+        //trail, as CaDiCaL's Internal::ask_decision() does. Otherwise go back
+        //to the top of the search loop and let it re-propagate, re-notify and
+        //walk the assumptions again; the decision, if any, is dropped and
+        //asked for afresh from there.
         if (trail.size() != ext_trail_before
             || decisionLevel() != ext_level_before
             || !ext_pending_fixed.empty()
         ) {
-            return l_Undef;
+            if (next == lit_Undef
+                || decisionLevel() < assumptions.size()
+                || !ext_pending_fixed.empty()
+                || qhead != trail.size()
+            ) {
+                return l_Undef;
+            }
+            assert(value(next) == l_Undef);
         }
         if (next != lit_Undef) {
             stats.decisions++;

@@ -1842,6 +1842,63 @@ TEST_F(UserPropDecideTest, force_backtrack_from_cb_decide)
     EXPECT_GT(p.num_backtracks, 0U);
 }
 
+// Forces a backtrack and, in the same breath, hands over the decision to make
+// on the backtracked trail: the opposite of something that was assigned above
+// the target level, so that it can only be ours.
+class BacktrackAndDecidePropagator : public MirrorPropagator
+{
+public:
+    Solver* raw = nullptr;
+    uint32_t budget = 0;
+    Lit expected = lit_Undef;
+    bool awaiting = false;
+    uint32_t num_honoured = 0;
+    uint32_t num_asked_again = 0;
+
+    Lit cb_decide() override {
+        if (awaiting) { num_asked_again++; return lit_Undef; }
+        if (budget == 0 || stack.size() <= 4 || stack[3].empty()) return lit_Undef;
+        budget--;
+        const Lit above = stack[3][0]; // assigned on level 3: gone after the backtrack
+        raw->ext_force_backtrack(1);
+        expected = ~above;
+        awaiting = true;
+        return expected;
+    }
+
+    void notify_assignment(const vector<Lit>& lits) override {
+        MirrorPropagator::notify_assignment(lits);
+        if (!awaiting) return;
+        // the first assignment after the forced backtrack is our decision,
+        // on level 2
+        awaiting = false;
+        EXPECT_EQ(stack.size(), 3U);
+        EXPECT_EQ(lits[0], expected);
+        EXPECT_TRUE(raw->ext_is_decision(expected));
+        if (lits[0] == expected) num_honoured++;
+    }
+};
+
+TEST_F(UserPropDecideTest, a_decision_handed_over_with_a_forced_backtrack_is_made)
+{
+    BacktrackAndDecidePropagator p;
+    s = new Solver(&conf, &must_inter);
+    s->connect_external_propagator(&p);
+    s->new_vars(40);
+    auto cls = gen_3sat(40, 120, 13);
+    for(const auto& cl: cls) { vector<Lit> tmp = cl; s->add_clause_outside(tmp); }
+    for(uint32_t v = 0; v < 40; v++) s->add_observed_var(v);
+    p.raw = s;
+    p.budget = 10;
+    p.start(s, 40);
+
+    must_inter.store(false, std::memory_order_relaxed);
+    EXPECT_NE(s->solve_with_assumptions(), l_Undef);
+    EXPECT_GT(p.num_honoured, 0U);
+    EXPECT_EQ(p.num_honoured, s->ext_stats.forced_backtracks);
+    EXPECT_EQ(p.num_asked_again, 0U);
+}
+
 TEST_F(UserPropDecideTest, force_backtrack_is_ignored_outside_the_callbacks)
 {
     NoopPropagator p;

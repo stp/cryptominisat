@@ -720,6 +720,9 @@ Lit Searcher::ext_decide()
     ext_stats.cb_calls++;
     const Lit elit = ext_prop->cb_decide();
     ext_forced_backtrack_allowed = false;
+    //A forced backtrack takes effect before the decision is looked at, so
+    //that the literal is judged against the trail it would be decided on.
+    if (ext_forced_backtrack_set) apply_ext_forced_backtrack();
     if (elit == lit_Undef) return lit_Undef;
 
     release_assert(elit.var() < nVarsOuter() &&
