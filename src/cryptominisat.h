@@ -99,6 +99,12 @@ namespace CMSat {
         // and every observed variable is frozen: simplification never
         // eliminates or replaces one, so the propagator's view of it stays
         // valid.
+        //
+        // With proof logging on, the clauses the propagator hands over are
+        // written to the FRAT file as original (input) clauses, which is what
+        // they are as far as the solver is concerned. The proof therefore
+        // certifies the CNF together with everything the propagator added, not
+        // the CNF on its own, and checking it needs both.
         ////////////////////////////
 
         void connect_external_propagator(ExternalPropagator* p);

@@ -318,6 +318,11 @@ elimination, chronological backtracking and symmetry breaking are switched off.
 Observed variables are frozen: simplification will not eliminate or replace them,
 so the propagator's view of them stays valid.
 
+With FRAT proof logging on, the clauses the propagator hands over are written to
+the proof as original (input) clauses. The proof therefore certifies the CNF
+together with everything the propagator added, not the CNF on its own -- checking
+it needs both.
+
 ## Preprocessing
 If you wish to use CryptoMiniSat as a preprocessor, we encourage you
 to try out our model counting preprocessor, [Arjun](https://www.github.com/meelgroup/arjun).
