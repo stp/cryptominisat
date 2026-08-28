@@ -286,6 +286,38 @@ cryptominisat = { git = "https://github.com/msoos/cryptominisat-rs", branch= "ma
 
 You can see an example project using CryptoMiniSat in Rust [here](https://github.com/msoos/caqe/).
 
+## User propagators (IPASIR-UP)
+
+An *external propagator* can inspect and steer the CDCL search from outside the
+solver, following the IPASIR-UP interface of ["Satisfiability Modulo User
+Propagators"](https://doi.org/10.1613/jair.1.16163) (JAIR 81, 2024). It is told
+about every assignment, decision level and backtrack over the variables it cares
+about, and in return it can propagate literals, hand over clauses during the
+search, choose the next decision, force a backtrack, and approve or reject a
+model. Typical uses are theory solvers in SMT, symmetry breaking, and model
+enumeration.
+
+Derive from `CMSat::ExternalPropagator` (see `src/user_prop.h`), then:
+
+```cpp
+#include <cryptominisat5/cryptominisat.h>
+
+MyPropagator prop;
+SATSolver s;
+s.new_vars(100);
+s.connect_external_propagator(&prop);
+for(uint32_t v = 0; v < 100; v++) s.add_observed_var(v);
+s.solve();
+```
+
+Literals crossing the interface use `CMSat::Lit`, the same numbering as
+`add_clause()` and `get_model()`, and `lit_Undef` closes a stream of literals.
+
+While a propagator is connected the solver runs single-threaded, and Gauss-Jordan
+elimination and chronological backtracking are switched off. Observed variables
+are frozen: simplification will not eliminate or replace them, so the
+propagator's view of them stays valid.
+
 ## Preprocessing
 If you wish to use CryptoMiniSat as a preprocessor, we encourage you
 to try out our model counting preprocessor, [Arjun](https://www.github.com/meelgroup/arjun).
