@@ -124,6 +124,29 @@ class Searcher : public HyperEngine
             }
         }
 
+        ///////////////////
+        // IPASIR-UP (see user_prop.cpp)
+        ///////////////////
+        /// Read one clause from the external propagator and add it to the
+        /// solver at the current decision level. 'reason_for' is lit_Undef for
+        /// a plain external clause, or the OUTER literal whose reason clause is
+        /// being asked for. Returns a conflicting PropBy, or a null one if
+        /// there is no conflict; sets ok=false if the clause is empty.
+        PropBy add_external_clause(bool forgettable, Lit reason_for = lit_Undef);
+        /// One round of interaction with the external propagator, run whenever
+        /// unit propagation has reached a fixed point. Returns a conflicting
+        /// PropBy, or a null one.
+        PropBy external_propagate();
+        /// Ask the propagator for a decision (Algorithm 4). Returns the literal
+        /// in INTER numbering, or lit_Undef to let the solver choose.
+        Lit ext_decide();
+        /// Ask the propagator to approve a complete assignment. Returns l_True
+        /// if it does, l_Undef if the search must continue, l_False for UNSAT.
+        /// A conflict found on the way is left in ext_confl.
+        lbool external_check_solution();
+        void apply_ext_forced_backtrack();
+        PropBy ext_attach_clause(const int32_t ID, const bool red);
+
         //ChronoBT
         template<bool do_insert_var_order = true, bool inprocess = false>
         void cancelUntil(uint32_t level); ///<Backtrack until a certain level.
@@ -563,6 +586,10 @@ inline void Searcher::decayClauseAct()
 
 inline bool Searcher::pick_polarity(const uint32_t var)
 {
+    //IPASIR-UP: SATSolver::phase() pins the polarity, whatever the current
+    //polarity mode is.
+    if (varData[var].forced_polarity_set) return varData[var].forced_polarity;
+
     switch(polarity_mode) {
         case PolarityMode::polarmode_neg:
             return false;

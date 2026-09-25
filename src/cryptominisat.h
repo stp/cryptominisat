@@ -30,6 +30,7 @@ THE SOFTWARE.
 #include <limits>
 #include <cstdio>
 #include "solvertypesmini.h"
+#include "user_prop.h"
 
 namespace CMSat {
     struct CMSatPrivateData;
@@ -89,6 +90,82 @@ namespace CMSat {
         bool okay() const; //the problem is still solveable, i.e. the empty clause hasn't been derived
 
         ////////////////////////////
+        // IPASIR-UP: external (user) propagator
+        //
+        // See user_prop.h for the ExternalPropagator interface itself. At most
+        // one propagator can be connected, and only to a single-threaded
+        // solver. While one is connected, Gauss-Jordan elimination,
+        // chronological backtracking and symmetry breaking are switched off,
+        // and every observed variable is frozen: simplification never
+        // eliminates or replaces one, so the propagator's view of it stays
+        // valid.
+        //
+        // With proof logging on, the clauses the propagator hands over are
+        // written to the FRAT file as original (input) clauses, which is what
+        // they are as far as the solver is concerned. The proof therefore
+        // certifies the CNF together with everything the propagator added, not
+        // the CNF on its own, and checking it needs both.
+        ////////////////////////////
+
+        void connect_external_propagator(ExternalPropagator* p);
+        void disconnect_external_propagator(); //also un-observes every variable
+
+        // Declare a variable relevant to the propagator. All IPASIR-UP calls
+        // are over observed variables only. May be called during solve() from
+        // inside any callback other than cb_add_reason_clause_lit(), but the
+        // variable must already exist. Observing
+        // one that is already assigned makes the solver backtrack over the
+        // assignment, so that it is made -- and notified -- again in the normal
+        // way: a callback that does this cannot assume the trail it was looking
+        // at is still there afterwards. A variable that simplification has
+        // eliminated is put back into the problem, which during solve() means
+        // backtracking to the root. One that has been replaced by an
+        // equivalent literal cannot be observed any more: observe it before
+        // the first solve(), or call set_no_equivalent_lit_replacement().
+        void add_observed_var(uint32_t var);
+        // Only for a variable that is unassigned, or fixed at the root. Anything
+        // else is backtracked over first, so that no propagation the solver
+        // cannot explain any more is left in the implication graph.
+        void remove_observed_var(uint32_t var);
+        // Stop observing every variable. As with removing one assigned
+        // variable, this may backtrack during solving so that no external
+        // propagation survives after its reason provider has been forgotten.
+        void reset_observed_vars();
+        bool is_observed_var(uint32_t var) const;
+
+        // True if the (observed, assigned) literal was assigned by a decision.
+        bool is_decision(Lit lit) const;
+
+        // Force the solver to backtrack. Only legal from inside cb_decide() or
+        // cb_check_found_model(); ignored otherwise, or if new_level is not
+        // below the current decision level. It takes effect once the callback
+        // returns; a decision returned by the same cb_decide() call is then
+        // made on the backtracked trail (see ExternalPropagator::cb_decide).
+        void force_backtrack(uint32_t new_level);
+
+        // Force the branching polarity of a variable, or hand it back to the
+        // solver's own polarity heuristic.
+        void phase(Lit lit);
+        void unphase(uint32_t var);
+
+        // Whether external propagations are explained lazily -- the reason
+        // clause is asked for only when conflict analysis needs it -- or
+        // eagerly, straight away. Lazy is the default: it is what the paper
+        // describes and what CaDiCaL does, and it avoids turning every
+        // propagation into a clause when only a fraction of the reasons are
+        // ever used. A propagation with no reason cannot be written down,
+        // though, and CryptoMiniSat records its whole derivation in FRAT, so
+        // reasons are always asked for eagerly while proof logging is on,
+        // whatever is set here.
+        //
+        // Explaining eagerly has a cost of its own: the reason clause is added
+        // to the solver, so a propagation whose antecedents all sit below the
+        // current decision level makes the search backtrack to where it should
+        // have been made. A propagator that propagates as soon as its antecedent
+        // completes never runs into that; one that catches up in batches will.
+        void set_lazy_external_reasons(bool lazy);
+
+        ////////////////////////////
         // Debug all calls for later replay with --debuglit FILENAME
         ////////////////////////////
         void log_to_file(std::string filename);
@@ -110,6 +187,8 @@ namespace CMSat {
 
         void set_num_threads(unsigned n); //Number of threads to use. Must be set before any vars/clauses are added
         void set_allow_otf_gauss(); //allow on-the-fly gaussian elimination
+        void set_max_num_matrices(uint32_t val); //max number of gaussian elimination matrices
+        void set_min_matrix_rows(uint32_t val); //below this many rows, a matrix is discarded
         /**
          * CPU time (in seconds) that can be consumed before the next call to solve() must return
          *
@@ -132,6 +211,7 @@ namespace CMSat {
         CMSat::PolarityMode get_polarity_mode() const;
         void set_no_simplify(); //never simplify
         void set_no_simplify_at_startup(); //doesn't simplify at start, faster startup time
+        void set_simplify_at_startup(int val); //simplify at the very start
         void set_no_equivalent_lit_replacement(); //don't replace equivalent literals
         void set_no_bva(); //No bounded variable addition
         void set_no_bve(); //No bounded variable elimination

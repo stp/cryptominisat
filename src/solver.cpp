@@ -905,6 +905,17 @@ bool Solver::renumber_variables(bool must_renumber)
 {
     assert(okay());
     assert(decisionLevel() == 0);
+
+    //IPASIR-UP: PropEngine::updateVars() keeps only the *length* of the trail,
+    //so anything not yet handed over would be lost. Renumbering runs as part of
+    //inprocessing, so lift the notification block for this one pass -- these
+    //are real, permanent level-0 assignments.
+    if (ext_prop != nullptr) {
+        const bool was_private = ext_prop_private_steps;
+        ext_prop_private_steps = false;
+        notify_assignments();
+        ext_prop_private_steps = was_private;
+    }
     SLOW_DEBUG_DO(for(const auto& x: xorclauses) for(const auto& v: x) assert(v < nVars()));
 
     if (nVars() == 0) return okay();
@@ -1221,6 +1232,12 @@ void Solver::check_xor_cut_config_sanity() const
 {
     if (MAX_XOR_RECOVER_SIZE < 4) {
         std::cerr << "ERROR: MAX_XOR_RECOVER_SIZE  must be at least 4. It's currently: " << MAX_XOR_RECOVER_SIZE << endl;
+        exit(-1);
+    }
+
+    if (conf.maxXorToFind > MAX_XOR_RECOVER_SIZE) {
+        std::cerr << "ERROR: maximum XOR size to find (" << conf.maxXorToFind
+        << ") cannot be larger than MAX_XOR_RECOVER_SIZE (" << MAX_XOR_RECOVER_SIZE << ")" << endl;
         exit(-1);
     }
 }
@@ -1880,7 +1897,13 @@ lbool Solver::execute_inprocess_strategy(
                 }
             }
         } else if (token == "breakid") {
+            //IPASIR-UP: symmetry breaking only preserves satisfiability of the
+            //clauses the solver can see. The external propagator's constraints
+            //are not among them and need not be symmetric under the same group,
+            //so a model it would have accepted can be broken away and the answer
+            //come back UNSAT. Off while a propagator is connected.
             if (conf.doBreakid
+                && ext_prop == nullptr
                 && !frat->enabled()
                 && (solveStats.num_simplify == 0 ||
                    (solveStats.num_simplify % conf.breakid_every_n == (conf.breakid_every_n-1)))
@@ -1936,6 +1959,10 @@ lbool Solver::simplify_problem(const bool startup, const string& strategy) {
     clear_order_heap();
     if (!clear_gauss_matrices(false)) return l_False;
 
+    //IPASIR-UP: inprocessing assigns and unassigns literals of its own, which
+    //are none of the propagator's business. Real (level 0) assignments made
+    //along the way are picked up by the next notification pass.
+    ExtPropPrivateSteps priv(this);
     if (ret == l_Undef) ret = execute_inprocess_strategy(startup, strategy);
     assert(ret != l_True);
 
@@ -2008,12 +2035,45 @@ void Solver::print_stats_time(
     }
 }
 
+void Solver::print_ext_prop_stats() const
+{
+    if (ext_stats.empty()) return;
+    print_stats_line(conf.prefix + "user-prop callbacks", ext_stats.cb_calls);
+    print_stats_line(conf.prefix + "user-prop props"
+        , ext_stats.props
+        , stats_line_percent(ext_stats.props, ext_stats.prop_calls)
+        , "% of cb_propagate calls");
+    print_stats_line(conf.prefix + "user-prop props lazy"
+        , ext_stats.props_lazy
+        , stats_line_percent(ext_stats.props_lazy, ext_stats.props)
+        , "% of ext props");
+    print_stats_line(conf.prefix + "user-prop explanations"
+        , ext_stats.explanations
+        , stats_line_percent(ext_stats.explanations, ext_stats.props)
+        , "% of ext props");
+    print_stats_line(conf.prefix + "user-prop clauses"
+        , ext_stats.clauses
+        , stats_line_percent(ext_stats.clauses, ext_stats.clause_calls)
+        , "% of cb_has_external_clause calls");
+    print_stats_line(conf.prefix + "user-prop cl units", ext_stats.clause_units);
+    print_stats_line(conf.prefix + "user-prop cl confl", ext_stats.clause_confls);
+    print_stats_line(conf.prefix + "user-prop cl ignored", ext_stats.clause_ignored);
+    print_stats_line(conf.prefix + "user-prop decisions", ext_stats.decisions);
+    print_stats_line(conf.prefix + "user-prop model checks", ext_stats.model_checks);
+    print_stats_line(conf.prefix + "user-prop models rejected"
+        , ext_stats.models_rejected
+        , stats_line_percent(ext_stats.models_rejected, ext_stats.model_checks)
+        , "% of model checks");
+    print_stats_line(conf.prefix + "user-prop forced BT", ext_stats.forced_backtracks);
+}
+
 void Solver::print_norm_stats(
     const double cpu_time,
     const double cpu_time_total,
     const double wallclock_time_started) const
 {
     sumSearchStats.print_short(sumPropStats.propagations, conf.do_print_times, conf.prefix);
+    print_ext_prop_stats();
     print_stats_line(conf.prefix + "props/decision"
         , float_div(propStats.propagations, sumSearchStats.decisions)
     );
@@ -3085,6 +3145,26 @@ void Solver::renumber_xors_to_outside(const vector<Xor>& xors, vector<Xor>& xors
 // and the matrices are created and initialized
 bool Solver::find_and_init_all_matrices() {
     frat_func_start();
+    //IPASIR-UP: Gauss-Jordan elimination assigns literals at a lower decision
+    //level than the current one (see EGaussian::prop_lit()), which the
+    //stack-like trail view of the external propagator cannot express. Plain
+    //XOR propagation is in-order and stays enabled.
+    if (ext_prop != nullptr) {
+        //Only actually tear anything down if a propagator was connected after
+        //the matrices were built: clear_gauss_matrices() re-attaches the XOR
+        //clauses and cleans the database, which is not free, and this runs once
+        //per iteration of the solving loop.
+        //
+        //xorclauses_updated is left alone on purpose. Setting it to false says
+        //the matrices are up to date with the XORs, and would keep them from
+        //ever being built again if the propagator is disconnected later.
+        if (!gmatrices.empty()) {
+            if (!clear_gauss_matrices(false)) return false;
+            verb_print(1, "[find&init matx] external propagator connected -> no matrices");
+        }
+        frat_func_end();
+        return true;
+    }
     if (!xorclauses_updated) {
         if (conf.verbosity >= 2) {
             cout << "c [find&init matx] XORs not updated-> not performing matrix init. Matrices: "
@@ -3239,6 +3319,8 @@ bool Solver::implied_by(const std::vector<Lit>& lits,
     implied_by_tmp_lits = lits;
     if (!add_clause_helper(implied_by_tmp_lits)) return false;
 
+    //IPASIR-UP: the decision level opened below is ours, not the search's
+    ExtPropPrivateSteps priv(this);
     assert(decisionLevel() == 0);
     for(Lit p: implied_by_tmp_lits) {
         if (value(p) == l_Undef) {
@@ -3541,6 +3623,8 @@ bool Solver::minimize_clause(vector<Lit>& cl) {
     assert(get_num_bva_vars() == 0);
 
     add_clause_helper(cl);
+    //IPASIR-UP: the decision level opened below is ours, not the search's
+    ExtPropPrivateSteps priv(this);
     new_decision_level();
     uint32_t i = 0;
     uint32_t j = 0;

@@ -893,6 +893,16 @@ bool VarReplacer::replace( uint32_t var1 , uint32_t var2 , const bool xor_is_tru
 
     replaceChecks(var1, var2);
 
+    //IPASIR-UP: observed variables are frozen. Replacing one would remove it
+    //from the search, and the external propagator would never hear about it
+    //again. The equivalence is still recorded as two binary clauses by the
+    //caller, so skipping the substitution only costs some propagation speed.
+    if (solver->varData[var1].observed || solver->varData[var2].observed) {
+        VERBOSE_PRINT("Not replacing var " << var1+1 << " / " << var2+1
+            << ", at least one is observed by the external propagator");
+        return solver->okay();
+    }
+
     //Move forward
     const Lit lit1 = get_lit_replaced_with(Lit(var1, false));
     const Lit lit2 = get_lit_replaced_with(Lit(var2, false)) ^ xor_is_true;

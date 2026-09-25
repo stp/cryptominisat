@@ -469,10 +469,11 @@ if(NOT NOCADICAL)
             find_package(cadical CONFIG REQUIRED HINTS "${cadical_DIR}")
             message(STATUS "CaDiCaL: using pre-built at ${cadical_DIR}")
         else()
+            # Pinned to a commit: a build must not depend on what a branch head
+            # holds on the day it runs. A commit cannot be fetched shallow.
             FetchContent_Declare(cadical
                 GIT_REPOSITORY https://github.com/meelgroup/cadical
-                GIT_TAG        master
-                GIT_SHALLOW    TRUE)
+                GIT_TAG        394c3f72858c2fe8cd35321f74f11f0f61c91123)
             FetchContent_MakeAvailable(cadical)
             message(STATUS "CaDiCaL: fetched from GitHub")
         endif()
@@ -484,8 +485,7 @@ if(NOT NOCADICAL)
         else()
             FetchContent_Declare(cadiback
                 GIT_REPOSITORY https://github.com/meelgroup/cadiback
-                GIT_TAG        main
-                GIT_SHALLOW    TRUE)
+                GIT_TAG        3b6a84062b1304433eb8960a4bff6b9a80de9c54)
             FetchContent_MakeAvailable(cadiback)
             message(STATUS "CaDiBaCk: fetched from GitHub")
         endif()

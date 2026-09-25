@@ -37,8 +37,12 @@ namespace CMSat {
 
 enum PropByType {
     null_clause_t = 0, clause_t = 1, binary_t = 2,
-    xor_t = 3, bnn_t = 4
+    xor_t = 3, bnn_t = 4, ext_t = 5
 };
+
+///Tag type for the constructor of an external (IPASIR-UP) propagation whose
+///reason clause has not been asked for yet.
+struct ExtPropTag {};
 
 class PropBy
 {
@@ -58,6 +62,7 @@ class PropBy
         //2: binary
         //3: xor
         //4: bnn
+        //5: external (IPASIR-UP)
         uint32_t data2:bitsize_data2;
         int32_t ID;
 
@@ -139,6 +144,18 @@ class PropBy
         {
         }
 
+        //IPASIR-UP: propagated by the external propagator. The reason clause is
+        //only asked for when conflict analysis actually needs it, and is then
+        //cached in a slot of CNF::ext_reasons.
+        explicit PropBy(ExtPropTag):
+            red_step(0)
+            , data1(0xfffffff)
+            , type(ext_t)
+            , data2(0)
+            , ID(0)
+        {
+        }
+
         //Binary prop
         PropBy(const Lit lit, const bool redStep, int32_t _ID) :
             red_step(redStep)
@@ -173,6 +190,29 @@ class PropBy
 
             data2 = (static_cast<uint32_t>(hyperBin) << 1)
                 | (static_cast<uint32_t>(hyperBinNotAdded) << 2);
+        }
+
+        [[nodiscard]] bool isExt() const
+        {
+            return type == ext_t;
+        }
+
+        void set_ext_reason(uint32_t idx)
+        {
+            assert(isExt());
+            data1 = idx;
+        }
+
+        [[nodiscard]] bool ext_reason_set() const
+        {
+            assert(isExt());
+            return data1 != 0xfffffff;
+        }
+
+        [[nodiscard]] uint32_t get_ext_reason() const
+        {
+            assert(ext_reason_set());
+            return data1;
         }
 
         void set_bnn_reason(uint32_t idx)
@@ -326,6 +366,11 @@ inline std::ostream& operator<<(std::ostream& os, const PropBy& pb)
 
         case null_clause_t:
             os << " nullptr";
+            break;
+
+        case ext_t:
+            os << " external reason"
+               << (pb.ext_reason_set() ? " (explained)" : " (not yet explained)");
             break;
 
         case bnn_t:

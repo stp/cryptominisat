@@ -283,6 +283,15 @@ void Searcher::normalClMinim()
                 break;
             }
 
+            case ext_t: {
+                auto ext_reason = get_ext_reason(~learnt_clause[i]);
+                lits = ext_reason->data();
+                size = ext_reason->size()-1;
+                sumAntecedentsLits += size;
+                id = 0;
+                break;
+            }
+
             default: release_assert(false);
         }
 
@@ -291,6 +300,7 @@ void Searcher::normalClMinim()
             switch (type) {
                 case xor_t:
                 case bnn_t:
+                case ext_t:
                 case clause_t:
                     p = lits[k+1];
                     break;
@@ -483,6 +493,19 @@ void Searcher::add_lits_to_learnt(
             break;
         }
 
+        case ext_t: {
+            //IPASIR-UP: never a conflict, always the reason of a propagation,
+            //so 'p' is the propagated literal and comes first in the clause.
+            assert(p != lit_Undef);
+            auto ext_reason = get_ext_reason(p);
+            lits = ext_reason->data();
+            size = ext_reason->size();
+            sumAntecedentsLits += size;
+            id = 0; // so we don't get a warning, assert below
+            assert(!frat->enabled());
+            break;
+        }
+
         case null_clause_t:
         default: release_assert(false && "Error in conflict analysis (otherwise should be UIP)");
     }
@@ -504,6 +527,7 @@ void Searcher::add_lits_to_learnt(
                 break;
 
             case bnn_t:
+            case ext_t:
             case clause_t:
             case xor_t:
                 x = lits[i];
@@ -700,6 +724,7 @@ void Searcher::simple_create_learnt_clause(
             }
 
             case bnn_t:
+            case ext_t:
             case xor_t:
             case clause_t: {
                 Lit* lits;
@@ -710,6 +735,10 @@ void Searcher::simple_create_learnt_clause(
                     size = cl->size();
                 } else if (confl.getType() == bnn_t) {
                     auto cl = get_bnn_reason(bnns[confl.getBNNidx()], p);
+                    lits = cl->data();
+                    size = cl->size();
+                } else if (confl.getType() == ext_t) {
+                    auto cl = get_ext_reason(p);
                     lits = cl->data();
                     size = cl->size();
                 } else {
@@ -950,6 +979,16 @@ bool Searcher::litRedundant(const Lit p, uint32_t abstract_levels)
                     Lit(p_analyze.var(), value(p_analyze.var()) == l_False));
                 lits = cl->data();
                 size = cl->size()-1;
+                ID = 0; //a BNN reason has no ID; chain is unused, see assert below
+                break;
+            }
+
+            case ext_t: {
+                vector<Lit>* cl = get_ext_reason(
+                    Lit(p_analyze.var(), value(p_analyze.var()) == l_False));
+                lits = cl->data();
+                size = cl->size()-1;
+                ID = 0;
                 break;
             }
 
@@ -970,6 +1009,7 @@ bool Searcher::litRedundant(const Lit p, uint32_t abstract_levels)
             switch (type) {
                 case xor_t:
                 case bnn_t:
+                case ext_t:
                 case clause_t:
                     p2 = lits[i+1];
                     break;
@@ -1089,6 +1129,14 @@ void Searcher::analyze_final_confl_with_assumptions(const Lit p, vector<Lit>& ou
                         vector<Lit>* cl = get_bnn_reason(bnns[reason.getBNNidx()], lit_Undef);
                         for(const Lit lit: *cl) {
                             if (varData[lit.var()].level > 0)seen[lit.var()] = 1;
+                        }
+                        break;
+                    }
+
+                    case ext_t : {
+                        vector<Lit>* cl = get_ext_reason(trail[i].lit);
+                        for(const Lit lit: *cl) {
+                            if (varData[lit.var()].level > 0) seen[lit.var()] = 1;
                         }
                         break;
                     }
@@ -1252,16 +1300,29 @@ lbool Searcher::search()
     PropBy confl;
     lbool search_ret = l_Undef;
 
+    ext_confl = PropBy();
     while (!params.must_stop
         || !confl.isnullptr() //always finish the last conflict
     ) {
-        confl = PropBy();
+        //IPASIR-UP: a conflict found while checking a complete assignment
+        confl = ext_confl;
+        ext_confl = PropBy();
         if (!solver->okay()) {
             assert(!frat->enabled() || unsat_cl_ID != 0);
             search_ret = l_False;
             goto end;
         }
         if (confl.isnullptr()) confl = propagate<false>();
+        if (confl.isnullptr() && ext_prop != nullptr) {
+            //IPASIR-UP: unit propagation has reached a fixed point, so this is
+            //where the external propagator gets its say.
+            confl = external_propagate();
+            if (!solver->okay()) {
+                assert(!frat->enabled() || unsat_cl_ID != 0);
+                search_ret = l_False;
+                goto end;
+            }
+        }
         if (!confl.isnullptr()) {
             #if defined(STATS_NEEDED) || defined(FINAL_PREDICTOR)
             hist.trailDepthHist.push(trail.size());
@@ -1285,6 +1346,9 @@ lbool Searcher::search()
                 }
             }
             reduce_db_if_needed();
+            //IPASIR-UP: the propagator's view of the trail must be current
+            //before it is asked anything.
+            notify_assignments();
             lbool dec_ret;
             if (fast_backw.fast_backw_on) dec_ret = new_decision_fast_backw();
             else dec_ret = new_decision<false>();
@@ -1357,22 +1421,87 @@ lbool Searcher::new_decision() {
         }
     }
 
+    if (next == lit_Undef && ext_prop != nullptr) {
+        //IPASIR-UP: every assumption is satisfied by now, so the propagator is
+        //allowed to have its say on the next decision (Algorithm 4).
+        const size_t ext_trail_before = trail.size();
+        const uint32_t ext_level_before = decisionLevel();
+        next = ext_decide();
+        //cb_decide() may force a backtrack, and is allowed to observe and
+        //un-observe variables, which backtrack too when the variable is
+        //assigned. Once the trail has moved, deciding on top of what is left
+        //is only right if every assumption is still there -- the loop above
+        //indexes assumptions[] by decision level, so a decision of ours in an
+        //assumption's place would skip that assumption altogether -- and if
+        //no root assignment is waiting to be handed over. Then a decision
+        //handed over together with the backtrack is made on the backtracked
+        //trail, as CaDiCaL's Internal::ask_decision() does. Otherwise go back
+        //to the top of the search loop and let it re-propagate, re-notify and
+        //walk the assumptions again; the decision, if any, is dropped and
+        //asked for afresh from there.
+        if (trail.size() != ext_trail_before
+            || decisionLevel() != ext_level_before
+            || !ext_pending_fixed.empty()
+        ) {
+            if (next == lit_Undef
+                || decisionLevel() < assumptions.size()
+                || !ext_pending_fixed.empty()
+                || qhead != trail.size()
+            ) {
+                return l_Undef;
+            }
+            assert(value(next) == l_Undef);
+        }
+        if (next != lit_Undef) {
+            stats.decisions++;
+            sumDecisions++;
+        }
+    }
+
     if (next == lit_Undef) {
         // New variable decision:
         next = pickBranchLit();
 
         //No decision taken, because it's SAT
-        if (next == lit_Undef)
+        if (next == lit_Undef) {
+            //IPASIR-UP: the propagator has to approve the assignment before it
+            //can be called a solution.
+            if (ext_prop != nullptr) {
+                const lbool ext_ret = external_check_solution();
+                if (ext_ret != l_True) return ext_ret;
+            }
             return l_True;
+        }
 
         //Update stats
         stats.decisions++;
         sumDecisions++;
     }
 
-    // Increase decision level and enqueue 'next'
+    // Increase decision level and enqueue 'next'. Opening the level itself is
+    // observable, and the callback may observe an already assigned variable;
+    // that backtracks the search. In that case 'next' was chosen for a trail
+    // that no longer exists and must not be enqueued at the callback's new
+    // level (which can even be the root level).
     assert(value(next) == l_Undef);
+    const uint32_t level_before = decisionLevel();
+    const size_t trail_before = trail.size();
     new_decision_level();
+    if (decisionLevel() != level_before + 1
+        || trail.size() != trail_before
+        || value(next) != l_Undef
+        || !ext_pending_fixed.empty()
+    ) {
+        //If the callback backtracked from inside the notification that opens
+        //the level, the level itself was opened on top of the backtracked
+        //trail and is empty. Close it again rather than leave a level with no
+        //decision behind, so that the search loop re-decides from a clean
+        //state.
+        if (decisionLevel() > 0 && trail_lim.back() == trail.size()) {
+            cancelUntil(decisionLevel() - 1);
+        }
+        return l_Undef;
+    }
     enqueue<inprocess>(next);
 
     return l_Undef;
@@ -1661,14 +1790,14 @@ Clause* Searcher::handle_last_confl(
         #if defined(STATS_NEEDED) || defined(FINAL_PREDICTOR)
         red_stats_extra.push_back(ClauseStatsExtra());
         cl->stats.extra_pos = red_stats_extra.size()-1;
-        auto& ext_stats = red_stats_extra[cl->stats.extra_pos];
-        ext_stats.introduced_at_conflict = sumConflicts;
-        ext_stats.orig_glue = glue;
-        ext_stats.orig_size = cl->size();
+        auto& stats_extra = red_stats_extra[cl->stats.extra_pos];
+        stats_extra.introduced_at_conflict = sumConflicts;
+        stats_extra.orig_glue = glue;
+        stats_extra.orig_size = cl->size();
         #endif
         #ifdef STATS_NEEDED
         cl->stats.is_tracked = to_track;
-        if (cl->stats.is_tracked) ext_stats.orig_ID = ID;
+        if (cl->stats.is_tracked) stats_extra.orig_ID = ID;
         if (sqlStats) sqlStats->update_id(ID, ID); // this is how we know it's tracked
         #endif
         cl->stats.activity = 0.0f;
@@ -1676,8 +1805,8 @@ Clause* Searcher::handle_last_confl(
         unsigned which_arr = 2;
 
         #ifdef STATS_NEEDED
-        ext_stats.connects_num_communities = connects_num_communities;
-        ext_stats.orig_connects_num_communities = connects_num_communities;
+        stats_extra.connects_num_communities = connects_num_communities;
+        stats_extra.orig_connects_num_communities = connects_num_communities;
         cl->stats.locked_for_data_gen =
             (double)rnd_uint(solver->mtrand,100000)/100000.0 < conf.lock_for_data_gen_ratio;
         #endif
@@ -1802,10 +1931,17 @@ bool Searcher::handle_conflict(PropBy confl)
     }
 
     // check chrono backtrack condition
+    //
+    //IPASIR-UP: chronological backtracking leaves out-of-order assignments on
+    //the trail (cancelUntil() keeps every entry whose level is at or below the
+    //target). notify_backtrack() promises the propagator a plain stack pop, so
+    //while one is connected we always backtrack non-chronologically -- the same
+    //reason XORs, Gauss-Jordan and BNNs already switch it off here.
     if (conf.diff_declev_for_chrono > -1
         && xorclauses.empty()
         && gmatrices.empty()
         && bnns.empty()
+        && ext_prop == nullptr
         && (((int)decisionLevel() - (int)backtrack_level) >= conf.diff_declev_for_chrono)
     ) {
         chrono_backtrack++;
@@ -2508,20 +2644,29 @@ lbool Searcher::solve(const uint64_t _max_confls) {
 
     SLOW_DEBUG_DO(assert(fast_backw.fast_backw_on || solver->check_order_heap_sanity()));
     while(stats.conflicts < max_confl_per_search_solve_call && status == l_Undef) {
-        if (!conf.never_stop_search &&
-                (distill_clauses_if_needed() == l_False
-                || !full_probe_if_needed()
-                || !distill_bins_if_needed()
-                || !sub_str_with_bin_if_needed()
-                || !str_impl_with_impl_if_needed()
-                || !intree_if_needed())
-          ) {
+        {
+            //IPASIR-UP: none of the assignments below belong to the search
+            ExtPropPrivateSteps priv(this);
+            if (!conf.never_stop_search &&
+                    (distill_clauses_if_needed() == l_False
+                    || !full_probe_if_needed()
+                    || !distill_bins_if_needed()
+                    || !sub_str_with_bin_if_needed()
+                    || !str_impl_with_impl_if_needed()
+                    || !intree_if_needed())
+              ) {
+                status = l_False;
+            }
+        }
+        if (status == l_False) {
             assert(!frat->enabled() || unsat_cl_ID != 0);
-            status = l_False;
             goto end;
         }
         SLOW_DEBUG_DO(assert(solver->check_order_heap_sanity()));
-        sls_if_needed();
+        {
+            ExtPropPrivateSteps priv(this);
+            sls_if_needed();
+        }
 
         assert(watches.get_smudged_list().empty());
         params.clear();
@@ -3171,6 +3316,13 @@ void Searcher::cancelUntil(uint32_t blevel)
                 bnn_reasons_empty_slots.push_back(reason_idx);
                 varData[var].reason = PropBy();
             }
+            //IPASIR-UP: same for a materialised external reason
+            if (varData[var].reason.isExt()) {
+                if (varData[var].reason.ext_reason_set()) {
+                    ext_reasons_empty_slots.push_back(varData[var].reason.get_ext_reason());
+                }
+                varData[var].reason = PropBy();
+            }
             if (!bnns.empty()) reverse_prop(trail[i].lit);
 
             #ifdef STATS_NEEDED_BRANCH
@@ -3244,6 +3396,11 @@ void Searcher::cancelUntil(uint32_t blevel)
         trail.resize(j);
         qhead = trail_lim[blevel];
         trail_lim.resize(blevel);
+
+        //IPASIR-UP: everything above the target level is gone, so the
+        //propagator's stack must be popped down to it too.
+        if (ext_notified > trail.size()) ext_notified = trail.size();
+        if (!inprocess && ext_notify_active()) ext_prop->notify_backtrack(blevel);
     }
 
     #ifdef VERBOSE_DEBUG
@@ -3268,6 +3425,9 @@ void Searcher::cancelUntil_light()
         assigns[var] = l_Undef;
     }
     trail.resize(trail_lim[0]);
+    //Only ever used by probing, which runs as a private step, so there is
+    //nothing to notify -- but the cursor must not dangle past the trail.
+    if (ext_notified > trail.size()) ext_notified = trail.size();
     qhead = trail_lim[0];
     trail_lim.resize(0);
 }
@@ -3378,6 +3538,13 @@ ConflictData Searcher::find_conflict_level(PropBy& pb) {
                 size = cl->size();
                 break;
             }
+
+            case PropByType::ext_t:
+                //IPASIR-UP: external propagation is only ever a reason, never a
+                //conflict -- a falsified external propagation is turned into a
+                //real clause by add_external_clause().
+                release_assert(false);
+                break;
 
             default:
                 release_assert(false);

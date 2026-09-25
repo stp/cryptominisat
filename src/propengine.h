@@ -221,7 +221,18 @@ public:
     template<bool inprocess> void enqueue(const Lit p);
     void enqueue_light(const Lit p);
     void new_decision_level();
+    void notify_assignments();
     vector<Lit>* get_xor_reason(const PropBy& reason, int32_t& ID);
+    /// IPASIR-UP: the reason clause of an external propagation of 'lit', asked
+    /// for from the propagator the first time conflict analysis needs it. The
+    /// propagated literal is always first.
+    ///
+    /// The pointer is into ext_reasons and stays valid only until the next call:
+    /// materialising a reason can grow that vector and move everything in it.
+    /// Every caller reads one reason to the end before asking for another --
+    /// keep it that way. get_bnn_reason() and get_xor_reason() have the same
+    /// shape and the same rule.
+    vector<Lit>* get_ext_reason(const Lit lit);
 
     /////////////////////
     // Branching
@@ -400,7 +411,14 @@ private:
 
 inline void PropEngine::new_decision_level()
 {
+    //IPASIR-UP: the propagator sees the trail as a stack, so it must know
+    //about everything below this point before the level is opened. Hand it
+    //over here rather than rely on every caller having done so -- an
+    //assignment notified after the level opens would be popped with the
+    //wrong level. CaDiCaL's notify_decision() flushes the same way.
+    if (ext_prop != nullptr) notify_assignments();
     trail_lim.push_back(trail.size());
+    if (ext_notify_active()) ext_prop->notify_new_decision_level();
     #ifdef VERBOSE_DEBUG
     cout << "New decision level: " << trail_lim.size() << endl;
     #endif
@@ -558,6 +576,12 @@ void PropEngine::enqueue(const Lit p, const uint32_t level, const PropBy from, b
         }
     }
     #endif
+
+    //IPASIR-UP: an assignment below the current decision level cannot be
+    //expressed in the stack-like view the propagator is given. Chronological
+    //backtracking and Gauss-Jordan elimination, the two things that produce
+    //them, are switched off while a propagator is connected.
+    assert(!ext_prop_active() || level == decisionLevel());
 
     const bool sign = p.sign();
     assigns[v] = boolToLBool(!sign);

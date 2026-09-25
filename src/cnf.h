@@ -29,6 +29,7 @@ THE SOFTWARE.
 #include "constants.h"
 #include "solvertypesmini.h"
 #include "vardata.h"
+#include "user_prop.h"
 #include "propby.h"
 #include "solverconf.h"
 #include "solvertypes.h"
@@ -163,6 +164,82 @@ public:
     vector<vector<Lit>> bnn_reasons;
     vector<Lit> bnn_confl_reason;
     vector<uint32_t> bnn_reasons_empty_slots;
+
+    ///////////////////
+    // IPASIR-UP (see user_prop.h)
+    ///////////////////
+    ExternalPropagator* ext_prop = nullptr;
+    /// What the external propagator has been doing. Cumulative over the life of
+    /// the connection; reset when one is connected.
+    struct ExtPropStats {
+        uint64_t cb_calls = 0;           ///< every call into the propagator
+        uint64_t prop_calls = 0;         ///< cb_propagate()
+        uint64_t props = 0;              ///< literals it propagated
+        uint64_t props_lazy = 0;         ///< ...left unexplained for the time being
+        uint64_t explanations = 0;       ///< reason clauses asked for
+        uint64_t clause_calls = 0;       ///< cb_has_external_clause()
+        uint64_t clauses = 0;            ///< clauses taken from it
+        uint64_t clause_units = 0;       ///< ...that were units
+        uint64_t clause_confls = 0;      ///< ...that were falsified
+        uint64_t clause_ignored = 0;     ///< ...that were satisfied at the root
+        uint64_t decisions = 0;          ///< decisions it made
+        uint64_t model_checks = 0;       ///< cb_check_found_model()
+        uint64_t models_rejected = 0;
+        uint64_t forced_backtracks = 0;
+        [[nodiscard]] bool empty() const { return cb_calls == 0; }
+    };
+    ExtPropStats ext_stats;
+    /// Observed variables, in OUTER numbering and in the order they were
+    /// observed. Outer numbering is stable across renumbering, so this survives
+    /// Solver::renumber_variables(). The matching per-variable flag lives in
+    /// VarData::observed (INTER numbering) for O(1) tests on the trail.
+    vector<uint32_t> ext_observed_vars;
+    /// While set, no notification reaches the propagator: the solver is doing
+    /// speculative work of its own (probing, distilling, in-tree probing, ...)
+    /// whose assignments are not part of the search.
+    bool ext_prop_private_steps = false;
+    /// Literals that became observed while already fixed at decision level 0.
+    /// Their trail position is behind the notification cursor, so they are
+    /// handed over separately, as part of the level-0 prefix.
+    vector<Lit> ext_pending_fixed;
+    /// How much of the trail the propagator has already been told about.
+    /// Notification is lazy: this only has to catch up before a callback.
+    uint32_t ext_notified = 0;
+    vector<Lit> ext_notify_lits; ///< scratch buffer for one notification batch
+    vector<Lit> ext_cl;          ///< scratch: an external clause, INTER numbering
+    vector<Lit> ext_cl_outer;    ///< scratch: the same clause as the user gave it
+    vector<Lit> ext_model;       ///< scratch: the model handed to cb_check_found_model
+    /// A conflict found while checking a complete assignment, waiting for the
+    /// search loop to pick it up.
+    PropBy ext_confl;
+    /// Reason clauses of external propagations, materialised on demand (see
+    /// PropEngine::get_ext_reason). Slots are handed back on backtracking, the
+    /// same way BNN reasons are.
+    vector<vector<Lit>> ext_reasons;
+    vector<uint32_t> ext_reasons_empty_slots;
+    /// force_backtrack() is only honoured from inside cb_decide() and
+    /// cb_check_found_model(); the request is recorded here and acted on once
+    /// the callback has returned.
+    bool ext_forced_backtrack_allowed = false;
+    bool ext_forced_backtrack_set = false;
+    uint32_t ext_forced_backtrack_level = 0;
+    /// A reason clause is being read from the propagator. The set of observed
+    /// variables cannot change while that goes on: when the reason is asked
+    /// for lazily this is conflict analysis, which cannot have the trail move
+    /// from under it, and even when it is asked for eagerly the literal being
+    /// explained has already been translated to INTER numbering, which
+    /// observing a renumbered-out variable would change.
+    bool ext_explaining = false;
+    [[nodiscard]] bool ext_prop_active() const {
+        return ext_prop != nullptr && !ext_prop_private_steps;
+    }
+    /// ...and wants to hear about the trail. A lazy propagator only looks at
+    /// complete assignments, so it is not notified at all -- CaDiCaL skips its
+    /// notify_assignments(), notify_decision() and notify_backtrack() the same
+    /// way.
+    [[nodiscard]] bool ext_notify_active() const {
+        return ext_prop_active() && !ext_prop->is_lazy;
+    }
     BinTriStats binTri;
     LitStats litStats;
     int32_t clauseID = 0;
@@ -323,6 +400,27 @@ private:
     void enlarge_nonminimial_datastructs(size_t n = 1);
     void swapVars(const uint32_t which, const int off_by = 0);
     size_t num_bva_vars = 0;
+};
+
+/**
+IPASIR-UP: suppress notifications while the solver makes assignments of its own
+that are not part of the search -- probing, distillation, in-tree probing and
+the rest of inprocessing all push decision levels and enqueue literals that are
+undone again straight away. The external propagator must not see any of it.
+*/
+struct ExtPropPrivateSteps
+{
+    explicit ExtPropPrivateSteps(CNF* _cnf) :
+        cnf(_cnf), saved(_cnf->ext_prop_private_steps)
+    {
+        cnf->ext_prop_private_steps = true;
+    }
+    ~ExtPropPrivateSteps() { cnf->ext_prop_private_steps = saved; }
+    ExtPropPrivateSteps(const ExtPropPrivateSteps&) = delete;
+    ExtPropPrivateSteps& operator=(const ExtPropPrivateSteps&) = delete;
+
+    CNF* cnf;
+    bool saved;
 };
 
 template<class Function>

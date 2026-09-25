@@ -406,6 +406,163 @@ lbool PropEngine::bnn_prop(
     return l_Undef;
 }
 
+/**
+IPASIR-UP: hand over every observed assignment the external propagator has not
+been told about yet.
+
+Notification is lazy -- this is called just before any callback, which is all
+the interface promises. Literals are handed over one decision level at a time,
+because the propagator is allowed to assume that a single batch belongs to a
+single level.
+*/
+void PropEngine::notify_assignments()
+{
+    if (!ext_prop_active()) return;
+    if (!ext_notify_active()) {
+        //Lazy: nothing to hand over, ever. Keep the cursor with the trail
+        //anyway, so that nothing accumulates behind it.
+        ext_pending_fixed.clear();
+        ext_notified = trail.size();
+        return;
+    }
+
+    //Variables that were already fixed when they became observed. Their trail
+    //position is behind the cursor, so they are kept separately. The callback
+    //may observe yet another fixed variable, which lands in ext_pending_fixed
+    //while it runs -- so hand over a batch at a time, from a buffer of its
+    //own, until nothing is left.
+    while (!ext_pending_fixed.empty()) {
+        assert(decisionLevel() == 0);
+        ext_notify_lits.clear();
+        ext_notify_lits.swap(ext_pending_fixed);
+        ext_prop->notify_assignment(ext_notify_lits);
+    }
+
+    while (ext_notified < trail.size()) {
+        const uint32_t lev = trail[ext_notified].lev;
+        ext_notify_lits.clear();
+        uint32_t i = ext_notified;
+        for(; i < trail.size() && trail[i].lev == lev; i++) {
+            const Lit lit = trail[i].lit;
+            //Solver::renumber_variables() wipes the literals of the level-0
+            //trail, keeping only its length. Everything up to that point has
+            //already been notified (see renumber_variables()).
+            if (lit == lit_Undef) continue;
+            if (!varData[lit.var()].observed) continue;
+            ext_notify_lits.push_back(map_inter_to_outer(lit));
+        }
+        ext_notified = i;
+        if (!ext_notify_lits.empty()) ext_prop->notify_assignment(ext_notify_lits);
+    }
+}
+
+/**
+IPASIR-UP: the reason clause of an external propagation, asked for only when
+conflict analysis actually needs it (JAIR 81, section 2.3, "delayed lazy
+explanation"). Once materialised it is cached in a slot that is handed back
+when the propagation is undone, exactly as BNN reasons are.
+
+Note that the propagator's view of the trail may be behind the solver's here:
+conflict analysis does not notify. The reason handed back must therefore be the
+one that was valid when the literal was propagated, which is what a propagator
+that records its reasons at propagation time gives anyway.
+*/
+vector<Lit>* PropEngine::get_ext_reason(const Lit lit)
+{
+    assert(ext_prop != nullptr);
+    auto& reason = varData[lit.var()].reason;
+    assert(reason.isExt());
+    if (reason.ext_reason_set()) return &ext_reasons[reason.get_ext_reason()];
+
+    uint32_t slot;
+    if (ext_reasons_empty_slots.empty()) {
+        ext_reasons.push_back(vector<Lit>());
+        slot = ext_reasons.size()-1;
+    } else {
+        slot = ext_reasons_empty_slots.back();
+        ext_reasons_empty_slots.pop_back();
+    }
+    reason.set_ext_reason(slot);
+    vector<Lit>* ret = &ext_reasons[slot];
+    ret->clear();
+
+    ext_stats.cb_calls++;
+    ext_stats.explanations++;
+    //This is conflict analysis: the trail cannot be backtracked from under it,
+    //and the reason being read must be over the observed variables as they
+    //are. Observing or un-observing from the callback is refused (see
+    //CNF::ext_explaining); CaDiCaL REQUIREs the same.
+    ext_explaining = true;
+    const Lit elit = map_inter_to_outer(lit);
+    Lit l = ext_prop->cb_add_reason_clause_lit(elit);
+    while (l != lit_Undef) {
+        release_assert(l.var() < nVarsOuter() &&
+            "external reason clause over a variable that does not exist");
+        const Lit inter = map_outer_to_inter(l);
+        //A literal falsified at the root carries no information -- conflict
+        //analysis skips level 0 anyway -- and it is the one thing a reason
+        //clause may legitimately mention that is no longer observed:
+        //remove_observed_var() only backtracks over assignments above the root,
+        //so a propagation made while the variable was still observed can
+        //outlive it. Drop it before the check rather than aborting on it.
+        if (value(inter) == l_False && varData[inter.var()].level == 0) {
+            l = ext_prop->cb_add_reason_clause_lit(elit);
+            continue;
+        }
+        release_assert(varData[inter.var()].observed &&
+            "external reason clauses must only mention observed variables");
+        ret->push_back(inter);
+        l = ext_prop->cb_add_reason_clause_lit(elit);
+    }
+    ext_explaining = false;
+
+    //Conflict analysis assumes an ordinary clause: in particular, the pivot
+    //occurs exactly once. Canonicalize benign duplicates before handing the
+    //reason over, and reject a complementary pair -- a tautology cannot explain
+    //a propagation. Lit's ordering keeps both signs of a variable adjacent.
+    std::sort(ret->begin(), ret->end());
+    Lit prev = lit_Undef;
+    size_t unique = 0;
+    for(const Lit q: *ret) {
+        if (q == prev) continue;
+        release_assert(q != ~prev &&
+            "the reason clause of an external propagation cannot be tautological");
+        (*ret)[unique++] = q;
+        prev = q;
+    }
+    ret->resize(unique);
+
+    //Conflict analysis reads the single propagated literal off the front.
+    bool found = false;
+    for(size_t i = 0; i < ret->size(); i++) {
+        if ((*ret)[i] == lit) { std::swap((*ret)[0], (*ret)[i]); found = true; break; }
+    }
+    release_assert(found &&
+        "the reason clause of an external propagation must contain the propagated literal");
+
+    //Every other literal must already have been falsified when 'lit' was
+    //propagated. Conflict analysis walks the trail backwards, so a reason that
+    //names a literal assigned *after* the one it explains sends it looking for a
+    //literal it has already passed, and off the bottom of the trail.
+    //
+    //This is the one part of the contract only the lazy path has to take on
+    //trust: explaining eagerly hands the reason to add_external_clause(), where
+    //it becomes a real clause that has to propagate on its own. The usual way to
+    //get it wrong is to work the reason out when asked rather than recording it
+    //when the propagation was made -- by then the trail has moved on. CaDiCaL
+    //checks the same thing at the end of learn_external_reason_clause().
+    for(size_t i = 1; i < ret->size(); i++) {
+        const Lit other = (*ret)[i];
+        release_assert(value(other) == l_False &&
+            "a literal of an external reason clause is not falsified");
+        release_assert(varData[other.var()].sublevel < varData[lit.var()].sublevel &&
+            "an external reason clause names a literal assigned after the one it explains");
+    }
+
+    VERBOSE_PRINT("[user-prop] explained " << lit << " with " << *ret);
+    return ret;
+}
+
 vector<Lit>* PropEngine::get_bnn_reason(BNN* bnn, Lit lit)
 {
 //     cout << "Getting BNN reason, lit: " << lit << " bnn: " << *bnn << endl;

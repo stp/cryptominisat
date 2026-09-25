@@ -112,6 +112,10 @@ bool Solver::full_probe(const bool bin_only)
 
 template<bool bin_only> bool Solver::probe_inter(const Lit l, uint32_t& min_props)
 {
+    //IPASIR-UP: probing assigns and unassigns literals of its own; none of it
+    //belongs to the search, so the external propagator must not hear about it.
+    ExtPropPrivateSteps priv(this);
+
     propStats.bogoProps+=2;
 
     //Probe l
